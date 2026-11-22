@@ -1,0 +1,139 @@
+cmake_minimum_required(VERSION 3.14)
+project(netl C)
+
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json" KC_VERSION_LINE
+    REGEX "^[ \t]*\"version\"[ \t]*:")
+string(REGEX REPLACE
+    ".*\"version\"[ \t]*:[ \t]*\"([^\"]+)\".*" "\\1"
+    KC_VERSION "${KC_VERSION_LINE}")
+if(NOT KC_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$")
+    message(FATAL_ERROR "Invalid semantic version in manifest.json")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json")
+add_compile_definitions("KC_MANIFEST_VERSION=\"${KC_VERSION}\"")
+
+add_compile_definitions("KC_MANIFEST_VERSION=\"${KC_VERSION}\"")
+
+set(CMAKE_C_STANDARD 11)
+
+if(NOT WIN32)
+    find_package(Threads REQUIRED)
+endif()
+
+option(NETL_NATIVE "Enable native hardware optimizations" OFF)
+option(NETL_BUILD_TESTS "Build netl tests" OFF)
+
+set(NETL_TEST_EXTERNAL_ARTIFACTS OFF)
+if(NETL_BUILD_TESTS AND NETL_TEST_SHARED_LIBRARY)
+    set(NETL_TEST_EXTERNAL_ARTIFACTS ON)
+endif()
+
+if(NOT MSVC)
+    add_compile_options(-O3 -Wall -Wextra -Werror)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        add_compile_options(-Wno-unused-command-line-argument)
+    endif()
+    if(NETL_NATIVE)
+        add_compile_options(-march=native)
+    endif()
+    if(APPLE)
+        add_definitions(-D_DARWIN_C_SOURCE -D_GNU_SOURCE)
+    else()
+        add_definitions(-D_GNU_SOURCE)
+    endif()
+else()
+    add_compile_options(/O2 /W3 /WX)
+endif()
+
+set_source_files_properties(src/libnetl.c PROPERTIES
+    COMPILE_DEFINITIONS "KC_NETL_VERSION=\"${KC_VERSION}\""
+)
+
+set(NETL_SOURCES src/libnetl.c)
+
+if(NOT NETL_TEST_EXTERNAL_ARTIFACTS)
+    add_library(netl_static STATIC ${NETL_SOURCES})
+    set_target_properties(netl_static PROPERTIES OUTPUT_NAME "netl")
+    target_include_directories(netl_static PRIVATE src)
+    if(WIN32)
+        target_link_libraries(netl_static PUBLIC ws2_32)
+    else()
+        target_link_libraries(netl_static Threads::Threads)
+    endif()
+
+    add_library(netl_shared SHARED ${NETL_SOURCES})
+    set_target_properties(netl_shared PROPERTIES OUTPUT_NAME "netl")
+    set_target_properties(netl_shared PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    target_include_directories(netl_shared PRIVATE src)
+
+    if(WIN32)
+        target_link_libraries(netl_shared ws2_32)
+    else()
+        target_link_libraries(netl_shared Threads::Threads)
+    endif()
+endif()
+
+if(NETL_BUILD_TESTS)
+    enable_testing()
+
+    if(NETL_TEST_SHARED_LIBRARY)
+        add_library(netl_test_shared SHARED IMPORTED)
+        set_target_properties(netl_test_shared PROPERTIES
+            IMPORTED_LOCATION "${NETL_TEST_SHARED_LIBRARY}"
+        )
+        if(NETL_TEST_IMPORT_LIBRARY)
+            set_target_properties(netl_test_shared PROPERTIES
+                IMPORTED_IMPLIB "${NETL_TEST_IMPORT_LIBRARY}"
+            )
+        endif()
+    else()
+        set(NETL_TEST_SHARED_TARGET netl_shared)
+    endif()
+
+    if(TARGET netl_test_shared)
+        set(NETL_TEST_SHARED_TARGET netl_test_shared)
+    endif()
+
+    add_executable(netl_contract_test src/test.c)
+    target_include_directories(netl_contract_test PRIVATE src)
+    target_link_libraries(netl_contract_test PRIVATE ${NETL_TEST_SHARED_TARGET})
+    if(DEFINED NETL_CLI_PATH)
+        target_compile_definitions(netl_contract_test PRIVATE
+            KC_CLI_PATH="${NETL_CLI_PATH}"
+        )
+    endif()
+
+    if(WIN32)
+        target_link_libraries(netl_contract_test PRIVATE ws2_32)
+    endif()
+
+    add_custom_command(TARGET netl_contract_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:${NETL_TEST_SHARED_TARGET}>
+            $<TARGET_FILE_DIR:netl_contract_test>
+    )
+
+endif()
+# Build the command-line frontend against the shared library.
+if(TARGET netl_static AND NOT EMSCRIPTEN AND
+    NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_executable(netl_cli src/netl.c)
+    set_target_properties(netl_cli PROPERTIES
+        OUTPUT_NAME "netl"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}"
+    )
+    target_include_directories(netl_cli PRIVATE src)
+    target_link_libraries(netl_cli PRIVATE netl_static)
+    if(APPLE)
+        set_target_properties(netl_cli PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@loader_path"
+        )
+    elseif(UNIX)
+        set_target_properties(netl_cli PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "$ORIGIN"
+        )
+    endif()
+endif()

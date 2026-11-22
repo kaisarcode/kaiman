@@ -1,0 +1,15 @@
+{
+  "name": "kaiman",
+  "version": "0.1.0",
+  "description": "Unified AI service manager and gateway with persistent sessions",
+  "author": "KaisarCode",
+  "license": "LGPL-3.0-only",
+  "website": "https://kaisarcode.com",
+  "repository": "https://gitlab.com/kaisarcode/kaiman.c",
+  "level": 1,
+  "dependencies": [
+    "libhttp",
+    "libkv",
+    "libnetl"
+  ]
+}

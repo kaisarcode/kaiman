@@ -1,0 +1,168 @@
+cmake_minimum_required(VERSION 3.14)
+project(http C)
+
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json" KC_VERSION_LINE
+    REGEX "^[ \t]*\"version\"[ \t]*:")
+string(REGEX REPLACE
+    ".*\"version\"[ \t]*:[ \t]*\"([^\"]+)\".*" "\\1"
+    KC_VERSION "${KC_VERSION_LINE}")
+if(NOT KC_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$")
+    message(FATAL_ERROR "Invalid semantic version in manifest.json")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json")
+add_compile_definitions("KC_MANIFEST_VERSION=\"${KC_VERSION}\"")
+
+add_compile_definitions("KC_MANIFEST_VERSION=\"${KC_VERSION}\"")
+
+set(CMAKE_C_STANDARD 11)
+
+option(HTTP_NATIVE "Enable native hardware optimizations" OFF)
+option(HTTP_BUILD_TESTS "Build http tests" OFF)
+
+set(HTTP_TEST_EXTERNAL_ARTIFACTS OFF)
+if(HTTP_BUILD_TESTS AND HTTP_TEST_SHARED_LIBRARY)
+    set(HTTP_TEST_EXTERNAL_ARTIFACTS ON)
+endif()
+
+if(NOT MSVC)
+    add_compile_options(-O3 -Wall -Wextra -Werror)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        add_compile_options(-Wno-unused-command-line-argument)
+    endif()
+    if(HTTP_NATIVE)
+        add_compile_options(-march=native)
+    endif()
+    add_definitions(-D_GNU_SOURCE)
+else()
+    add_compile_options(/O2 /W3 /WX)
+endif()
+
+set_source_files_properties(src/libhttp.c PROPERTIES
+    COMPILE_DEFINITIONS "KC_HTTP_VERSION=\"${KC_VERSION}\""
+)
+
+if(EMSCRIPTEN)
+    add_executable(http_wasm src/libhttp.c)
+    target_include_directories(http_wasm PRIVATE src)
+    set_target_properties(http_wasm PROPERTIES
+        OUTPUT_NAME "libhttp"
+        SUFFIX ".mjs"
+    )
+    target_link_options(http_wasm PRIVATE
+        --no-entry
+        -sMODULARIZE=1
+        -sEXPORT_ES6=1
+        -sALLOW_TABLE_GROWTH=1
+        -sEXPORTED_RUNTIME_METHODS=UTF8ToString,stringToUTF8,lengthBytesUTF8,getValue,setValue,HEAPU8,HEAPF32,addFunction,removeFunction
+        -sALLOW_MEMORY_GROWTH=1
+        -sSTACK_SIZE=1048576
+        -sEXPORTED_FUNCTIONS=_kc_http_parser_open,_kc_http_parser_write,_kc_http_parser_close,_kc_http_request,_kc_http_response,_kc_http_free,_kc_http_strerror,_kc_http_version,_malloc,_free
+    )
+
+    add_library(http_wasm_static STATIC src/libhttp.c)
+    set_target_properties(http_wasm_static PROPERTIES
+        PREFIX "lib"
+        OUTPUT_NAME "http"
+        POSITION_INDEPENDENT_CODE ON
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out"
+    )
+    target_include_directories(http_wasm_static PRIVATE src)
+
+    add_library(http_wasm_shared SHARED src/libhttp.c)
+    set_target_properties(http_wasm_shared PROPERTIES
+        PREFIX "lib"
+        OUTPUT_NAME "http"
+        SUFFIX ".so"
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/out"
+    )
+    target_include_directories(http_wasm_shared PRIVATE src)
+    target_link_options(http_wasm_shared PRIVATE -sSIDE_MODULE=1)
+endif()
+
+if(NOT HTTP_TEST_EXTERNAL_ARTIFACTS AND NOT EMSCRIPTEN)
+    add_library(http_static STATIC src/libhttp.c)
+    set_target_properties(http_static PROPERTIES OUTPUT_NAME "http")
+    target_include_directories(http_static PRIVATE src)
+
+    add_library(http_shared SHARED src/libhttp.c)
+    set_target_properties(http_shared PROPERTIES OUTPUT_NAME "http")
+    set_target_properties(http_shared PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    target_include_directories(http_shared PRIVATE src)
+
+    if(UNIX AND NOT ANDROID AND NOT APPLE)
+        target_link_libraries(http_static m)
+        target_link_libraries(http_shared m)
+    endif()
+endif()
+
+if(TARGET http_static AND NOT EMSCRIPTEN AND
+    NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_executable(http_cli src/http.c)
+    set_target_properties(http_cli PROPERTIES
+        OUTPUT_NAME "http"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}"
+    )
+    target_include_directories(http_cli PRIVATE src)
+    target_link_libraries(http_cli PRIVATE http_static)
+    if(APPLE)
+        set_target_properties(http_cli PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@loader_path"
+        )
+    elseif(UNIX)
+        set_target_properties(http_cli PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "$ORIGIN"
+        )
+    endif()
+endif()
+
+if(HTTP_BUILD_TESTS)
+    enable_testing()
+
+    if(EMSCRIPTEN)
+        add_executable(http_contract_test src/test.c src/libhttp.c)
+        target_include_directories(http_contract_test PRIVATE src)
+        target_link_options(http_contract_test PRIVATE -sSTACK_SIZE=1048576)
+    else()
+        if(HTTP_TEST_SHARED_LIBRARY)
+            add_library(http_test_shared SHARED IMPORTED)
+            set_target_properties(http_test_shared PROPERTIES
+                IMPORTED_LOCATION "${HTTP_TEST_SHARED_LIBRARY}"
+            )
+            if(HTTP_TEST_IMPORT_LIBRARY)
+                set_target_properties(http_test_shared PROPERTIES
+                    IMPORTED_IMPLIB "${HTTP_TEST_IMPORT_LIBRARY}"
+                )
+            endif()
+        else()
+            set(HTTP_TEST_SHARED_TARGET http_shared)
+        endif()
+
+        if(TARGET http_test_shared)
+            set(HTTP_TEST_SHARED_TARGET http_test_shared)
+        endif()
+
+        add_executable(http_contract_test src/test.c)
+        target_include_directories(http_contract_test PRIVATE src)
+        target_link_libraries(http_contract_test PRIVATE ${HTTP_TEST_SHARED_TARGET})
+        if(HTTP_CLI_PATH)
+            target_compile_definitions(http_contract_test PRIVATE
+                KC_CLI_PATH="${HTTP_CLI_PATH}"
+            )
+        endif()
+
+        if(UNIX AND NOT ANDROID AND NOT APPLE)
+            target_link_libraries(http_contract_test PRIVATE m)
+        endif()
+
+        add_custom_command(TARGET http_contract_test POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:${HTTP_TEST_SHARED_TARGET}>
+                $<TARGET_FILE_DIR:http_contract_test>
+        )
+
+    endif()
+endif()

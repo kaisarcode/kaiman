@@ -1,0 +1,9 @@
+{
+  "name": "libkv",
+  "version": "1.0.0",
+  "description": "Manages binary values by string key in memory, with portable snapshot import and export.",
+  "author": "KaisarCode",
+  "license": "LGPL-3.0-only",
+  "website": "https://kaisarcode.com",
+  "repository": "https://gitlab.com/kaisarcode/libkv.c"
+}

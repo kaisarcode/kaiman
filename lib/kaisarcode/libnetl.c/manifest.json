@@ -1,0 +1,9 @@
+{
+  "name": "libnetl",
+  "version": "1.0.1",
+  "description": "Maintains persistent bidirectional TCP/UDP sockets with peer-level send and receive callbacks.",
+  "author": "KaisarCode",
+  "license": "LGPL-3.0-only",
+  "website": "https://kaisarcode.com",
+  "repository": "https://gitlab.com/kaisarcode/libnetl.c"
+}

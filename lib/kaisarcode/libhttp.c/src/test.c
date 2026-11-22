@@ -1,0 +1,663 @@
+/**
+ * test.c - Public contract tests for libhttp.
+ *
+ * Author:  KaisarCode
+ * Website: https://kaisarcode.com
+ * License: https://www.gnu.org/licenses/lgpl-3.0.html
+ */
+
+#include "libhttp.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int test_case_total;
+static int test_case_current;
+
+#ifndef __EMSCRIPTEN__
+static int case_http_cli(void);
+#endif
+
+/**
+ * expect true.
+ * @return Function result.
+ */
+static int expect_true(const char *label, int condition) {
+    if (condition) return 0;
+    fprintf(stderr, "FAIL: %s\n", label);
+    return 1;
+}
+
+/**
+ * expect int.
+ * @return Function result.
+ */
+static int expect_int(const char *label, int expected, int actual) {
+    if (expected == actual) return 0;
+    fprintf(stderr, "FAIL: %s: expected %d, got %d\n", label, expected, actual);
+    return 1;
+}
+
+/**
+ * expect bytes.
+ * @return Function result.
+ */
+static int expect_bytes(
+    const char *label,
+    const void *expected,
+    size_t expected_size,
+    const void *actual,
+    size_t actual_size
+) {
+    if (expected_size == actual_size &&
+        (expected_size == 0U || memcmp(expected, actual, expected_size) == 0)) {
+        return 0;
+    }
+    fprintf(stderr, "FAIL: %s\n", label);
+    return 1;
+}
+
+/**
+ * expect contains.
+ * @return Function result.
+ */
+static int expect_contains(
+    const char *label,
+    const void *data,
+    size_t size,
+    const char *needle
+) {
+    size_t n = strlen(needle);
+    size_t i;
+    if (n == 0U) return 0;
+    for (i = 0; i + n <= size; i++) {
+        if (memcmp((const unsigned char *)data + i, needle, n) == 0) return 0;
+    }
+    fprintf(stderr, "FAIL: %s\n", label);
+    return 1;
+}
+
+/**
+ * test result.
+ * @return None.
+ */
+static void test_result(int fail, const char *name, const char *detail) {
+    test_case_current++;
+    printf("[%d/%d] [%s] %s: %s\n",
+        test_case_current,
+        test_case_total,
+        fail ? "FAIL" : "PASS",
+        name,
+        detail);
+}
+
+/**
+ * test run.
+ * @return None.
+ */
+static void test_run(int *rc, int (*fn)(void)) {
+    if (fn() != 0) (*rc)++;
+}
+
+typedef struct {
+    int requests;
+    int responses;
+    int errors;
+    int last_error;
+    char method[32];
+    char target[128];
+    char path[128];
+    char query[128];
+    int status;
+    int chunked;
+    char reason[128];
+    char host[128];
+    char trailer_sum[128];
+    unsigned char body[256];
+    size_t body_size;
+} parser_state_t;
+
+/**
+ * copy text.
+ * @return None.
+ */
+static void copy_text(char *dst, size_t cap, const char *src) {
+    if (cap == 0U) return;
+    if (src == NULL) src = "";
+    snprintf(dst, cap, "%s", src);
+}
+
+/**
+ * on request.
+ * @return None.
+ */
+static void on_request(const kc_http_request_t *request, void *userdata) {
+    parser_state_t *state = (parser_state_t *)userdata;
+    size_t i;
+    state->requests++;
+    state->chunked = request->chunked;
+    copy_text(state->method, sizeof(state->method), request->method);
+    copy_text(state->target, sizeof(state->target), request->target);
+    copy_text(state->path, sizeof(state->path), request->path);
+    copy_text(state->query, sizeof(state->query), request->query);
+    state->host[0] = '\0';
+    state->trailer_sum[0] = '\0';
+    for (i = 0; i < request->header_count; i++) {
+        if (strcmp(request->headers[i].name, "host") == 0) {
+            copy_text(state->host, sizeof(state->host), request->headers[i].value);
+        }
+    }
+    for (i = 0; i < request->trailer_count; i++) {
+        if (strcmp(request->trailers[i].name, "x-sum") == 0) {
+            copy_text(
+                state->trailer_sum,
+                sizeof(state->trailer_sum),
+                request->trailers[i].value
+            );
+        }
+    }
+    state->body_size = request->body_size < sizeof(state->body)
+        ? request->body_size : sizeof(state->body);
+    if (state->body_size != 0U) {
+        memcpy(state->body, request->body, state->body_size);
+    }
+}
+
+/**
+ * on response.
+ * @return None.
+ */
+static void on_response(const kc_http_response_t *response, void *userdata) {
+    parser_state_t *state = (parser_state_t *)userdata;
+    state->responses++;
+    state->status = response->status;
+    state->chunked = response->chunked;
+    copy_text(state->reason, sizeof(state->reason), response->reason);
+    state->body_size = response->body_size < sizeof(state->body)
+        ? response->body_size : sizeof(state->body);
+    if (state->body_size != 0U) {
+        memcpy(state->body, response->body, state->body_size);
+    }
+}
+
+/**
+ * on error.
+ * @return None.
+ */
+static void on_error(int status, void *userdata) {
+    parser_state_t *state = (parser_state_t *)userdata;
+    state->errors++;
+    state->last_error = status;
+}
+
+/**
+ * Test kc http parser open.
+ * @return Function result.
+ */
+static int case_kc_http_parser_open(void) {
+    kc_http_parser_t *parser = (kc_http_parser_t *)1;
+    parser_state_t state;
+    int fail = 0;
+
+    memset(&state, 0, sizeof(state));
+    fail += expect_int("NULL out", KC_HTTP_EINVAL,
+        kc_http_parser_open(NULL, on_request, NULL, on_error, &state));
+    fail += expect_int("no message handlers", KC_HTTP_EINVAL,
+        kc_http_parser_open(&parser, NULL, NULL, on_error, &state));
+    fail += expect_true("failed open clears output", parser == NULL);
+    fail += expect_int("valid open", KC_HTTP_OK,
+        kc_http_parser_open(&parser, on_request, on_response, on_error, &state));
+    fail += expect_true("parser allocated", parser != NULL);
+    kc_http_parser_close(parser);
+
+    test_result(fail, "kc_http_parser_open", "creates one parser per HTTP byte stream");
+    return fail != 0;
+}
+
+/**
+ * Test kc http parser write.
+ * @return Function result.
+ */
+static int case_kc_http_parser_write(void) {
+    static const char a[] =
+        "POST /api?q=1 HTTP/1.1\r\n"
+        "Host: Example\r\n"
+        "Content-Length: 5\r\n\r\n"
+        "he";
+    static const char b[] = "llo";
+    static const char two[] =
+        "GET /a HTTP/1.1\r\n\r\n"
+        "GET /b HTTP/1.1\r\n\r\n";
+    static const char bad[] =
+        "POST / HTTP/1.1\r\n"
+        "Content-Length: 1\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+        "0\r\n\r\n";
+    kc_http_parser_t *parser = NULL;
+    parser_state_t state;
+    int fail = 0;
+
+    memset(&state, 0, sizeof(state));
+    fail += expect_int("open", KC_HTTP_OK,
+        kc_http_parser_open(&parser, on_request, on_response, on_error, &state));
+    fail += expect_int("first fragment", KC_HTTP_OK,
+        kc_http_parser_write(parser, a, sizeof(a) - 1U));
+    fail += expect_int("no early request", 0, state.requests);
+    fail += expect_int("second fragment", KC_HTTP_OK,
+        kc_http_parser_write(parser, b, sizeof(b) - 1U));
+    fail += expect_int("one request", 1, state.requests);
+    fail += expect_true("method", strcmp(state.method, "POST") == 0);
+    fail += expect_true("target", strcmp(state.target, "/api?q=1") == 0);
+    fail += expect_true("path", strcmp(state.path, "/api") == 0);
+    fail += expect_true("query", strcmp(state.query, "q=1") == 0);
+    fail += expect_true("lowercase header name", strcmp(state.host, "Example") == 0);
+    fail += expect_bytes("body", "hello", 5U, state.body, state.body_size);
+
+    fail += expect_int("multiple complete requests", KC_HTTP_OK,
+        kc_http_parser_write(parser, two, sizeof(two) - 1U));
+    fail += expect_int("two more callbacks", 3, state.requests);
+
+    {
+        static const char chunk_a[] =
+            "POST /chunk HTTP/1.1\r\n"
+            "Transfer-Encoding: chunked\r\n\r\n"
+            "2\r\nhi\r\n3\r\nb";
+        static const char chunk_b[] =
+            "ye\r\n0\r\nX-Sum: yes\r\n\r\n";
+
+        fail += expect_int("chunked first fragment", KC_HTTP_OK,
+            kc_http_parser_write(parser, chunk_a, sizeof(chunk_a) - 1U));
+        fail += expect_int("chunked still incomplete", 3, state.requests);
+        fail += expect_int("chunked completion", KC_HTTP_OK,
+            kc_http_parser_write(parser, chunk_b, sizeof(chunk_b) - 1U));
+        fail += expect_int("chunked callback", 4, state.requests);
+        fail += expect_int("chunked framing", 1, state.chunked);
+        fail += expect_bytes("dechunked body", "hibye", 5U, state.body, state.body_size);
+        fail += expect_true("parsed trailer", strcmp(state.trailer_sum, "yes") == 0);
+    }
+
+    fail += expect_int("malformed framing", KC_HTTP_EPARSE,
+        kc_http_parser_write(parser, bad, sizeof(bad) - 1U));
+    fail += expect_int("error callback", 1, state.errors);
+    fail += expect_int("error status", KC_HTTP_EPARSE, state.last_error);
+    kc_http_parser_close(parser);
+
+    fail += expect_int("NULL parser", KC_HTTP_EINVAL,
+        kc_http_parser_write(NULL, "x", 1U));
+
+    test_result(fail, "kc_http_parser_write", "buffers fragments and emits complete messages");
+    return fail != 0;
+}
+
+/**
+ * Test kc http parser close.
+ * @return Function result.
+ */
+static int case_kc_http_parser_close(void) {
+    kc_http_parser_t *parser = NULL;
+    parser_state_t state;
+    int fail = 0;
+
+    memset(&state, 0, sizeof(state));
+    fail += expect_int("open", KC_HTTP_OK,
+        kc_http_parser_open(&parser, on_request, NULL, on_error, &state));
+    fail += expect_int("partial write", KC_HTTP_OK,
+        kc_http_parser_write(parser, "GET / HTTP/1.1\r\nHost:", strlen("GET / HTTP/1.1\r\nHost:")));
+    kc_http_parser_close(parser);
+    fail += expect_int("close reports incomplete stream", 1, state.errors);
+    fail += expect_int("close parse status", KC_HTTP_EPARSE, state.last_error);
+    kc_http_parser_close(NULL);
+
+    test_result(fail, "kc_http_parser_close", "finalizes and releases parser state");
+    return fail != 0;
+}
+
+/**
+ * Test kc http request.
+ * @return Function result.
+ */
+static int case_kc_http_request(void) {
+    const kc_http_field_t headers[] = {
+        { "Host", "example.com" },
+        { "X-Test", "one" }
+    };
+    const kc_http_field_t trailers[] = {
+        { "X-Sum", "yes" }
+    };
+    const unsigned char body[] = { 'A', 0, 'B' };
+    kc_http_request_build_t request;
+    void *data = NULL;
+    size_t size = 0U;
+    int fail = 0;
+
+    fail += expect_int("default request", KC_HTTP_OK,
+        kc_http_request(NULL, &data, &size));
+    fail += expect_contains("default request line", data, size, "GET / HTTP/1.1\r\n");
+    kc_http_free(data);
+
+    memset(&request, 0, sizeof(request));
+    request.method = "POST";
+    request.target = "/upload";
+    request.headers = headers;
+    request.header_count = 2U;
+    request.body = body;
+    request.body_size = sizeof(body);
+    fail += expect_int("binary request", KC_HTTP_OK,
+        kc_http_request(&request, &data, &size));
+    fail += expect_contains("request line", data, size, "POST /upload HTTP/1.1\r\n");
+    fail += expect_contains("host header", data, size, "Host: example.com\r\n");
+    fail += expect_bytes("binary tail", body, sizeof(body),
+        (const unsigned char *)data + size - sizeof(body), sizeof(body));
+    kc_http_free(data);
+
+    memset(&request, 0, sizeof(request));
+    request.method = "POST";
+    request.chunked = 1;
+    {
+        static const size_t chunk_size = 2U;
+        request.chunk_size = &chunk_size;
+    }
+    request.body = "abc";
+    request.body_size = 3U;
+    request.trailers = trailers;
+    request.trailer_count = 1U;
+    fail += expect_int("chunked request", KC_HTTP_OK,
+        kc_http_request(&request, &data, &size));
+    fail += expect_contains("chunked header", data, size, "Transfer-Encoding: chunked\r\n");
+    fail += expect_contains("trailer", data, size, "0\r\nX-Sum: yes\r\n\r\n");
+    kc_http_free(data);
+
+    {
+        const char *versions[] = { "2", "3" };
+        size_t vi;
+        for (vi = 0U; vi < 2U; vi++) {
+            kc_http_parser_t *parser = NULL;
+            parser_state_t state;
+
+            memset(&request, 0, sizeof(request));
+            request.version = versions[vi];
+            request.method = "GET";
+            request.target = "/proto";
+            fail += expect_int("protocol request build", KC_HTTP_OK,
+                kc_http_request(&request, &data, &size));
+
+            memset(&state, 0, sizeof(state));
+            fail += expect_int("protocol parser open", KC_HTTP_OK,
+                kc_http_parser_open(
+                    &parser,
+                    on_request,
+                    on_response,
+                    on_error,
+                    &state
+                ));
+            fail += expect_int("protocol request parse", KC_HTTP_OK,
+                kc_http_parser_write(parser, data, size));
+            fail += expect_int("protocol request callback", 1, state.requests);
+            fail += expect_true("protocol target", strcmp(state.target, "/proto") == 0);
+            kc_http_parser_close(parser);
+            kc_http_free(data);
+            data = NULL;
+        }
+    }
+
+    request.body = NULL;
+    request.body_size = 1U;
+    fail += expect_int("invalid body", KC_HTTP_EINVAL,
+        kc_http_request(&request, &data, &size));
+
+    memset(&request, 0, sizeof(request));
+    {
+        static const size_t chunk_size_zero = 0U;
+        request.chunked = 1;
+        request.chunk_size = &chunk_size_zero;
+    }
+    fail += expect_int("explicit zero request chunk size", KC_HTTP_EINVAL,
+        kc_http_request(&request, &data, &size));
+
+    test_result(fail, "kc_http_request", "builds request wire bytes without persistent builder state");
+    return fail != 0;
+}
+
+/**
+ * Test kc http response.
+ * @return Function result.
+ */
+static int case_kc_http_response(void) {
+    const kc_http_field_t headers[] = {
+        { "Content-Type", "text/plain" }
+    };
+    kc_http_response_build_t response;
+    void *data = NULL;
+    size_t size = 0U;
+    kc_http_parser_t *parser = NULL;
+    parser_state_t state;
+    int fail = 0;
+
+    fail += expect_int("default response", KC_HTTP_OK,
+        kc_http_response(NULL, &data, &size));
+    fail += expect_contains("default status", data, size, "HTTP/1.1 200 OK\r\n");
+    kc_http_free(data);
+
+    memset(&response, 0, sizeof(response));
+    {
+        static const int status_created = 201;
+        response.status = &status_created;
+    }
+    response.headers = headers;
+    response.header_count = 1U;
+    response.body = "created";
+    response.body_size = 7U;
+    fail += expect_int("response", KC_HTTP_OK,
+        kc_http_response(&response, &data, &size));
+    fail += expect_contains("status line", data, size, "HTTP/1.1 201 Created\r\n");
+    fail += expect_contains("content type", data, size, "Content-Type: text/plain\r\n");
+
+    memset(&state, 0, sizeof(state));
+    fail += expect_int("parser open", KC_HTTP_OK,
+        kc_http_parser_open(&parser, on_request, on_response, on_error, &state));
+    fail += expect_int("parse response", KC_HTTP_OK,
+        kc_http_parser_write(parser, data, size));
+    fail += expect_int("response callback", 1, state.responses);
+    fail += expect_int("status parsed", 201, state.status);
+    fail += expect_bytes("response body", "created", 7U, state.body, state.body_size);
+    kc_http_parser_close(parser);
+    kc_http_free(data);
+
+    {
+        const char *versions[] = { "2", "3" };
+        size_t vi;
+        for (vi = 0U; vi < 2U; vi++) {
+            memset(&response, 0, sizeof(response));
+            response.version = versions[vi];
+            {
+                static const int status_no_content = 204;
+                response.status = &status_no_content;
+            }
+
+            fail += expect_int("protocol response build", KC_HTTP_OK,
+                kc_http_response(&response, &data, &size));
+
+            memset(&state, 0, sizeof(state));
+            parser = NULL;
+            fail += expect_int("protocol response parser open", KC_HTTP_OK,
+                kc_http_parser_open(
+                    &parser,
+                    on_request,
+                    on_response,
+                    on_error,
+                    &state
+                ));
+            fail += expect_int("protocol response parse", KC_HTTP_OK,
+                kc_http_parser_write(parser, data, size));
+            fail += expect_int("protocol response callback", 1, state.responses);
+            fail += expect_int("protocol response status", 204, state.status);
+            kc_http_parser_close(parser);
+            kc_http_free(data);
+            data = NULL;
+        }
+    }
+
+    memset(&response, 0, sizeof(response));
+    {
+        static const int status_bad = 99;
+        response.status = &status_bad;
+    }
+    fail += expect_int("bad status", KC_HTTP_EINVAL,
+        kc_http_response(&response, &data, &size));
+
+    {
+        static const int status_zero = 0;
+        response.status = &status_zero;
+    }
+    fail += expect_int("explicit zero status", KC_HTTP_EINVAL,
+        kc_http_response(&response, &data, &size));
+
+    memset(&response, 0, sizeof(response));
+    {
+        static const size_t chunk_size_zero = 0U;
+        response.chunked = 1;
+        response.chunk_size = &chunk_size_zero;
+    }
+    fail += expect_int("explicit zero response chunk size", KC_HTTP_EINVAL,
+        kc_http_response(&response, &data, &size));
+
+    test_result(fail, "kc_http_response", "builds response wire bytes symmetrically");
+    return fail != 0;
+}
+
+/**
+ * Test kc http free.
+ * @return Function result.
+ */
+static int case_kc_http_free(void) {
+    int fail = 0;
+    void *data = NULL;
+    size_t size = 0U;
+
+    kc_http_free(NULL);
+    fail += expect_int("library allocation", KC_HTTP_OK,
+        kc_http_request(NULL, &data, &size));
+    fail += expect_true("allocated wire bytes", data != NULL && size != 0U);
+    kc_http_free(data);
+
+    test_result(fail, "kc_http_free", "releases builder output");
+    return fail != 0;
+}
+
+/**
+ * Test kc http strerror.
+ * @return Function result.
+ */
+static int case_kc_http_strerror(void) {
+    int fail = 0;
+    fail += expect_true("ok", strcmp(kc_http_strerror(KC_HTTP_OK), "ok") == 0);
+    fail += expect_true("invalid", strcmp(kc_http_strerror(KC_HTTP_EINVAL), "invalid argument") == 0);
+    fail += expect_true("parse", strcmp(kc_http_strerror(KC_HTTP_EPARSE), "HTTP parse error") == 0);
+    fail += expect_true("memory", strcmp(kc_http_strerror(KC_HTTP_ENOMEM), "out of memory") == 0);
+    fail += expect_true("unknown", strcmp(kc_http_strerror(-999), "unknown error") == 0);
+    test_result(fail, "kc_http_strerror", "maps public status values");
+    return fail != 0;
+}
+
+/**
+ * Test kc http version.
+ * @return Function result.
+ */
+static int case_kc_http_version(void) {
+    int fail = 0;
+    (void)kc_http_version();
+    test_result(fail, "kc_http_version", "returns the compiled semantic version");
+    return fail != 0;
+}
+
+/**
+ * test named.
+ * @return Function result.
+ */
+static int test_named(const char *name) {
+    if (strcmp(name, "kc_http_parser_open") == 0) return case_kc_http_parser_open();
+    if (strcmp(name, "kc_http_parser_write") == 0) return case_kc_http_parser_write();
+    if (strcmp(name, "kc_http_parser_close") == 0) return case_kc_http_parser_close();
+    if (strcmp(name, "kc_http_request") == 0) return case_kc_http_request();
+    if (strcmp(name, "kc_http_response") == 0) return case_kc_http_response();
+    if (strcmp(name, "kc_http_free") == 0) return case_kc_http_free();
+    if (strcmp(name, "kc_http_strerror") == 0) return case_kc_http_strerror();
+    if (strcmp(name, "kc_http_version") == 0) return case_kc_http_version();
+#ifndef __EMSCRIPTEN__
+    if (strcmp(name, "http_cli") == 0) return case_http_cli();
+#endif
+    fprintf(stderr, "unknown case: %s\n", name);
+    return 2;
+}
+
+/**
+ * main.
+ * @return Process exit code.
+ */
+int main(int argc, char **argv) {
+    int rc = 0;
+
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s <case>\n", argv[0]);
+        return 2;
+    }
+    if (strcmp(argv[1], "all") != 0) return test_named(argv[1]);
+
+    test_case_total = 9;
+    test_case_current = 0;
+    test_run(&rc, case_kc_http_parser_open);
+    test_run(&rc, case_kc_http_parser_write);
+    test_run(&rc, case_kc_http_parser_close);
+    test_run(&rc, case_kc_http_request);
+    test_run(&rc, case_kc_http_response);
+    test_run(&rc, case_kc_http_free);
+    test_run(&rc, case_kc_http_strerror);
+    test_run(&rc, case_kc_http_version);
+#ifndef __EMSCRIPTEN__
+    test_run(&rc, case_http_cli);
+#endif
+    printf("%d passed, %d failed\n", test_case_total - rc, rc);
+    return rc;
+}
+
+#ifndef __EMSCRIPTEN__
+#ifndef KC_CLI_PATH
+#define KC_CLI_PATH "http"
+#endif
+
+/**
+ * Runs one http CLI command with output discarded.
+ * @param args Command arguments.
+ * @return Shell exit status.
+ */
+static int http_cli_run(const char *args) {
+    char command[4096];
+
+#ifdef _WIN32
+    snprintf(command, sizeof(command), "\"\"%s\" %s > NUL 2>&1\"",
+        KC_CLI_PATH, args);
+#else
+    snprintf(command, sizeof(command), "\"%s\" %s > /dev/null 2>&1",
+        KC_CLI_PATH, args);
+#endif
+    return system(command);
+}
+
+/**
+ * Tests the http CLI command surface.
+ * @return One when a check failed, otherwise zero.
+ */
+static int case_http_cli(void) {
+    int fail;
+
+    fail = 0;
+    fail += http_cli_run("--help") != 0;
+    fail += http_cli_run("--version") != 0;
+    fail += http_cli_run("request GET / hello") != 0;
+    fail += http_cli_run("response 201 created") != 0;
+    fail += http_cli_run("response invalid") == 0;
+    test_result(fail, "http_cli", "builds and validates command operations");
+    return fail != 0;
+}
+#endif

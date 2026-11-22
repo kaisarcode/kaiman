@@ -1,0 +1,664 @@
+/**
+ * test.c - Public libnetl contract tests.
+ * Summary: Exercises transport only through the exported API.
+ *
+ * Author: KaisarCode
+ * Website: https://kaisarcode.com
+ * License: https://www.gnu.org/licenses/lgpl-3.0.html
+ */
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+#include "libnetl.h"
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#define TEST_CLOSE closesocket
+typedef SOCKET test_socket_t;
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <unistd.h>
+#define TEST_CLOSE close
+typedef int test_socket_t;
+#endif
+
+static int test_case_total;
+static int test_case_current;
+
+/**
+ * Print one test result in the standard kclib format.
+ * @param failed Nonzero on failure.
+ * @param name Case name.
+ * @param detail Verified behavior.
+ * @return void
+ */
+static void case_result(int failed,const char *name,const char *detail)
+{
+    test_case_current++;
+    printf("[%d/%d] [%s] %s: %s\n",test_case_current,test_case_total,
+        failed?"FAIL":"PASS",name,detail);
+}
+
+typedef struct {
+    atomic_int received;
+    atomic_int errors;
+    unsigned short last_port;
+    char data[64];
+    size_t size;
+    int reply;
+} test_state_t;
+
+/**
+ * Receive bytes and optionally echo them to the originating peer.
+ * @param peer Callback peer.
+ * @param data Received bytes.
+ * @param size Received byte count.
+ * @param userdata Test state.
+ * @return void
+ */
+static void test_receive(kc_netl_peer_t *peer,const void *data,
+    size_t size,void *userdata)
+{
+    test_state_t *state=(test_state_t *)userdata;
+    if(size>sizeof(state->data))size=sizeof(state->data);
+    memcpy(state->data,data,size);
+    state->size=size;
+    state->last_port=kc_netl_peer_port(peer);
+    if(state->reply && !(size==4U && memcmp(data,"pong",4U)==0))
+        (void)kc_netl_peer_send(peer,"pong",4U);
+    atomic_fetch_add(&state->received,1);
+}
+
+/**
+ * Register asynchronous failures.
+ * @param status Failure status.
+ * @param userdata Test state.
+ * @return void
+ */
+static void test_error(int status,void *userdata)
+{
+    test_state_t *state=(test_state_t *)userdata;
+    (void)status;
+    atomic_fetch_add(&state->errors,1);
+}
+
+/**
+ * Delay briefly while callbacks run.
+ * @param milliseconds Wait interval.
+ * @return void
+ */
+static void test_sleep(unsigned milliseconds)
+{
+#ifdef _WIN32
+    Sleep(milliseconds);
+#else
+    struct timespec duration;
+    duration.tv_sec=(time_t)(milliseconds/1000U);
+    duration.tv_nsec=(long)((milliseconds%1000U)*1000000UL);
+    (void)nanosleep(&duration,NULL);
+#endif
+}
+
+/**
+ * Wait for a callback count.
+ * @param state Test state.
+ * @param count Expected minimum.
+ * @return One when reached, zero otherwise.
+ */
+static int test_wait(test_state_t *state,int count)
+{
+    unsigned i;
+    for(i=0;i<200U;i++){
+        if(atomic_load(&state->received)>=count)return 1;
+        test_sleep(10U);
+    }
+    return 0;
+}
+
+/**
+ * Obtain an unused local port without relying on nonpublic libnetl accessors.
+ * @param protocol Socket transport.
+ * @return Available port, or zero on failure.
+ */
+static unsigned short test_port(int protocol)
+{
+    test_socket_t fd;
+    struct sockaddr_in address;
+    #ifdef _WIN32
+    int length=(int)sizeof(address);
+    #else
+    socklen_t length=(socklen_t)sizeof(address);
+    #endif
+    unsigned short port=0;
+    fd=socket(AF_INET,protocol==KC_NETL_TCP?SOCK_STREAM:SOCK_DGRAM,0);
+#ifdef _WIN32
+    if(fd==INVALID_SOCKET)return 0;
+#else
+    if(fd<0)return 0;
+#endif
+    memset(&address,0,sizeof(address));
+    address.sin_family=AF_INET;
+    address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    if(bind(fd,(struct sockaddr *)&address,(socklen_t)sizeof(address))==0 &&
+        getsockname(fd,(struct sockaddr *)&address,&length)==0)
+        port=ntohs(address.sin_port);
+    TEST_CLOSE(fd);
+    return port;
+}
+
+/**
+ * Verify validation and status helpers with public symbols only.
+ * @return Zero on success.
+ */
+static int case_open(void)
+{
+    kc_netl_t *net=NULL;
+    kc_netl_options_t options;
+    test_state_t state={0};
+    int fail=0;
+    memset(&options,0,sizeof(options));
+    options.host="127.0.0.1";
+    options.port=12345U;
+    options.protocol=KC_NETL_TCP;
+    fail+=(kc_netl_open(NULL,&options,test_receive,NULL,test_error,&state)!=KC_NETL_EINVAL);
+    fail+=(kc_netl_open(&net,NULL,test_receive,NULL,test_error,&state)!=KC_NETL_EINVAL);
+    fail+=(kc_netl_open(&net,&options,NULL,NULL,test_error,&state)!=KC_NETL_EINVAL);
+    options.protocol=99;
+    fail+=(kc_netl_open(&net,&options,test_receive,NULL,test_error,&state)!=KC_NETL_EINVAL);
+    fail+=(net!=NULL);
+    kc_netl_close(NULL);
+    fail+=(kc_netl_strerror(KC_NETL_OK)==NULL);
+    fail+=((strcmp(kc_netl_version(), KC_MANIFEST_VERSION) != 0));
+    case_result(fail,"kc_netl_open","validates the public net and status helpers");
+    return fail?1:0;
+}
+
+/**
+ * Verify TCP open reports a failed bind instead of returning a dead handle.
+ * @return Zero on success.
+ */
+static int case_tcp_open_failure(void)
+{
+    kc_netl_t *net=NULL;
+    kc_netl_options_t options={0};
+    test_state_t state={0};
+    int rc,fail;
+    options.host="not-a-local-net.invalid";
+    options.port=12345U;
+    options.protocol=KC_NETL_TCP;
+    rc=kc_netl_open(&net,&options,test_receive,NULL,test_error,&state);
+    fail=(rc==KC_NETL_OK||net!=NULL);
+    kc_netl_close(net);
+    case_result(fail,"kc_netl_tcp_open_failure",
+        "reports invalid listening addresses without returning a handle");
+    return fail!=0;
+}
+
+/**
+ * Verify persistent UDP, directed datagrams, and callback replies.
+ * @return Zero on success.
+ */
+static int case_udp(void)
+{
+    kc_netl_t *sender=NULL,*receiver=NULL;
+    kc_netl_options_t left,right;
+    kc_netl_endpoint_t destination;
+    test_state_t sent={0},received={0};
+    unsigned short a=test_port(KC_NETL_UDP),b=test_port(KC_NETL_UDP);
+    int fail=0;
+    if(!a||!b||a==b)return 1;
+    memset(&left,0,sizeof(left));
+    memset(&right,0,sizeof(right));
+    left.host="127.0.0.1";left.port=a;left.protocol=KC_NETL_UDP;
+    right.host="127.0.0.1";right.port=b;right.protocol=KC_NETL_UDP;
+    received.reply=1;
+    if(kc_netl_open(&receiver,&right,test_receive,NULL,test_error,&received)!=KC_NETL_OK)
+        return 1;
+    if(kc_netl_open(&sender,&left,test_receive,NULL,test_error,&sent)!=KC_NETL_OK){
+        kc_netl_close(receiver);return 1;
+    }
+    destination.host="127.0.0.1";destination.port=b;
+    fail+=(kc_netl_send(sender,"ping",4U,&destination)!=KC_NETL_OK);
+    fail+=!test_wait(&received,1);
+    fail+=!test_wait(&sent,1);
+    fail+=(received.size!=4U||memcmp(received.data,"ping",4U)!=0);
+    fail+=(sent.size!=4U||memcmp(sent.data,"pong",4U)!=0);
+    fail+=(atomic_load(&sent.errors)!=0);
+    fail+=(atomic_load(&received.errors)!=0);
+    kc_netl_close(sender);
+    kc_netl_close(receiver);
+    case_result(fail,"kc_netl_udp","sends and receives UDP datagrams on persistent interfaces");
+    return fail?1:0;
+}
+
+/**
+ * Verify persistent TCP and callback replies through the unified net.
+ * @return Zero on success.
+ */
+static int case_tcp(void)
+{
+    kc_netl_t *net=NULL;
+    kc_netl_options_t options;
+    test_state_t state={0};
+    unsigned short port=test_port(KC_NETL_TCP);
+    int fail=0;
+    if(!port)return 1;
+    memset(&options,0,sizeof(options));
+    options.host="127.0.0.1";
+    options.port=port;
+    options.protocol=KC_NETL_TCP;
+    state.reply=1;
+    if(kc_netl_open(&net,&options,test_receive,NULL,test_error,&state)!=KC_NETL_OK)
+        return 1;
+    fail+=(kc_netl_send(net,"hello",5U,NULL)!=KC_NETL_OK);
+    fail+=!test_wait(&state,2);
+    fail+=(atomic_load(&state.errors)!=0);
+    kc_netl_close(net);
+    case_result(fail,"kc_netl_tcp","uses a persistent bidirectional TCP net");
+    return fail?1:0;
+}
+
+/**
+ * Verify invalid explicit destinations do not change the net.
+ * @return Zero on success.
+ */
+static int case_invalid_destination(void)
+{
+    kc_netl_t *net=NULL;
+    kc_netl_options_t options={0};
+    kc_netl_endpoint_t destination={NULL,0};
+    test_state_t state={0};
+    unsigned short port=test_port(KC_NETL_UDP);
+    int fail=0;
+    options.host="127.0.0.1";
+    options.port=port;options.protocol=KC_NETL_UDP;
+    if(!port||kc_netl_open(&net,&options,test_receive,NULL,
+        test_error,&state)!=KC_NETL_OK){case_result(1,"kc_netl_invalid_destination",
+        "rejects invalid datagram endpoints");return 1;}
+    fail+=(kc_netl_send(net,"x",1U,&destination)!=KC_NETL_EINVAL);
+    destination.host="127.0.0.1";
+    fail+=(kc_netl_send(net,"x",1U,&destination)!=KC_NETL_EINVAL);
+    fail+=(kc_netl_send(net,NULL,1U,NULL)!=KC_NETL_EINVAL);
+    kc_netl_close(net);
+    case_result(fail,"kc_netl_invalid_destination",
+        "rejects invalid datagram endpoints");
+    return fail!=0;
+}
+
+/**
+ * Verify one net reaches two independent UDP destinations.
+ * @return Zero on success.
+ */
+static int case_udp_multidestination(void)
+{
+    kc_netl_t *sender=NULL,*first=NULL,*second=NULL;
+    kc_netl_options_t options={0};
+    kc_netl_endpoint_t destination;
+    test_state_t outbound={0},one={0},two={0};
+    unsigned short a=test_port(KC_NETL_UDP);
+    unsigned short b=test_port(KC_NETL_UDP);
+    unsigned short c=test_port(KC_NETL_UDP);
+    int fail=0;
+    if(!a||!b||!c||a==b||b==c||a==c){
+        case_result(1,"kc_netl_udp_multidestination",
+            "uses one persistent socket for multiple peers");return 1;
+    }
+    options.host="127.0.0.1";options.protocol=KC_NETL_UDP;
+    options.port=b;
+    if(kc_netl_open(&first,&options,test_receive,NULL,test_error,
+        &one)!=KC_NETL_OK)goto failure;
+    options.port=c;
+    if(kc_netl_open(&second,&options,test_receive,NULL,test_error,
+        &two)!=KC_NETL_OK)goto failure;
+    options.port=a;
+    if(kc_netl_open(&sender,&options,test_receive,NULL,test_error,
+        &outbound)!=KC_NETL_OK)goto failure;
+    destination.host="127.0.0.1";
+    destination.port=b;
+    fail+=(kc_netl_send(sender,"one",3U,&destination)!=KC_NETL_OK);
+    destination.port=c;
+    fail+=(kc_netl_send(sender,"two",3U,&destination)!=KC_NETL_OK);
+    destination.port=b;
+    fail+=(kc_netl_send(sender,"last",4U,&destination)!=KC_NETL_OK);
+    fail+=!test_wait(&one,2);
+    fail+=!test_wait(&two,1);
+    fail+=(two.size!=3U||memcmp(two.data,"two",3U)!=0);
+    fail+=(one.size!=4U||memcmp(one.data,"last",4U)!=0);
+    fail+=(one.last_port!=a||two.last_port!=a);
+    fail+=(atomic_load(&outbound.errors)!=0);
+    kc_netl_close(sender);kc_netl_close(first);kc_netl_close(second);
+    case_result(fail,"kc_netl_udp_multidestination",
+        "uses one persistent socket for multiple peers");
+    return fail!=0;
+failure:
+    kc_netl_close(sender);kc_netl_close(first);kc_netl_close(second);
+    case_result(1,"kc_netl_udp_multidestination",
+        "uses one persistent socket for multiple peers");
+    return 1;
+}
+
+/**
+ * Verify direct sends do not replace the configured UDP destination.
+ * @return Zero on success.
+ */
+static int case_udp_default_destination(void)
+{
+    kc_netl_t *sender=NULL,*receiver=NULL;
+    kc_netl_options_t options={0};
+    kc_netl_endpoint_t destination;
+    test_state_t outbound={0},inbound={0};
+    unsigned short a=test_port(KC_NETL_UDP);
+    unsigned short b=test_port(KC_NETL_UDP);
+    int fail=0;
+    if(!a||!b||a==b){
+        case_result(1,"kc_netl_udp_default",
+            "keeps the configured destination after explicit sends");return 1;
+    }
+    options.host="127.0.0.1";options.protocol=KC_NETL_UDP;
+    options.port=b;
+    if(kc_netl_open(&receiver,&options,test_receive,NULL,test_error,
+        &inbound)!=KC_NETL_OK)goto failure;
+    options.port=a;
+    if(kc_netl_open(&sender,&options,test_receive,NULL,test_error,
+        &outbound)!=KC_NETL_OK)goto failure;
+    destination.host="127.0.0.1";destination.port=b;
+    fail+=(kc_netl_send(sender,"target",6U,&destination)!=KC_NETL_OK);
+    fail+=!test_wait(&inbound,1);
+    fail+=(kc_netl_send(sender,"self",4U,NULL)!=KC_NETL_OK);
+    fail+=!test_wait(&outbound,1);
+    fail+=(outbound.size!=4U||memcmp(outbound.data,"self",4U)!=0);
+    fail+=(inbound.size!=6U||memcmp(inbound.data,"target",6U)!=0);
+    kc_netl_close(sender);kc_netl_close(receiver);
+    case_result(fail,"kc_netl_udp_default",
+        "keeps the configured destination after explicit sends");
+    return fail!=0;
+failure:
+    kc_netl_close(sender);kc_netl_close(receiver);
+    case_result(1,"kc_netl_udp_default",
+        "keeps the configured destination after explicit sends");
+    return 1;
+}
+
+/**
+ * Verify TCP rejects destination overrides rather than switching connections.
+ * @return Zero on success.
+ */
+static int case_tcp_destination(void)
+{
+    kc_netl_t *net=NULL;
+    kc_netl_options_t options={0};
+    kc_netl_endpoint_t other={"127.0.0.1",1234U};
+    test_state_t state={0};
+    int fail=0;
+    options.host="127.0.0.1";
+    options.port=test_port(KC_NETL_TCP);
+    options.protocol=KC_NETL_TCP;
+    if(!options.port||kc_netl_open(&net,&options,test_receive,
+        NULL,test_error,&state)!=KC_NETL_OK){
+        case_result(1,"kc_netl_tcp_destination",
+            "does not reinterpret TCP addresses");return 1;
+    }
+    fail+=(kc_netl_send(net,"x",1U,&other)!=KC_NETL_EINVAL);
+    kc_netl_close(net);
+    case_result(fail,"kc_netl_tcp_destination",
+        "does not reinterpret TCP addresses");
+    return fail!=0;
+}
+
+/**
+ * Verify a wildcard bind is not implicitly redirected to loopback.
+ * @return Zero on success.
+ */
+static int case_tcp_wildcard(void)
+{
+    kc_netl_t *net=NULL;
+    kc_netl_options_t options={0};
+    test_state_t state={0};
+    int fail=0;
+    options.host="0.0.0.0";
+    options.port=test_port(KC_NETL_TCP);
+    options.protocol=KC_NETL_TCP;
+    if(!options.port||kc_netl_open(&net,&options,test_receive,
+        NULL,test_error,&state)!=KC_NETL_OK){
+        case_result(1,"kc_netl_tcp_wildcard",
+            "never rewrites wildcard binds to loopback");return 1;
+    }
+    fail+=(kc_netl_send(net,"x",1U,NULL)!=KC_NETL_EINVAL);
+    kc_netl_close(net);
+    case_result(fail,"kc_netl_tcp_wildcard",
+        "never rewrites wildcard binds to loopback");
+    return fail!=0;
+}
+
+/**
+ * Verify one prepared interface is reused for outbound TCP sends.
+ * @return Zero on success.
+ */
+static int case_tcp_remote(void)
+{
+    kc_netl_t *server=NULL;
+    kc_netl_t *client=NULL;
+    kc_netl_options_t options={0};
+    test_state_t inbound={0};
+    test_state_t outbound={0};
+    unsigned short port=test_port(KC_NETL_TCP);
+    unsigned short client_port=0;
+    int fail=0;
+    options.host="127.0.0.1";
+    options.port=port;
+    options.protocol=KC_NETL_TCP;
+    inbound.reply=1;
+    if(!port||kc_netl_open(&server,&options,test_receive,
+        NULL,test_error,&inbound)!=KC_NETL_OK){
+        case_result(1,"kc_netl_tcp_remote",
+            "prepares one interface and reuses it for TCP sends");return 1;
+    }
+    if(kc_netl_open(&client,&options,test_receive,
+        NULL,test_error,&outbound)!=KC_NETL_OK){
+        kc_netl_close(server);
+        case_result(1,"kc_netl_tcp_remote",
+            "prepares one interface and reuses it for TCP sends");return 1;
+    }
+    fail+=(kc_netl_send(client,"ping",4U,NULL)!=KC_NETL_OK);
+    fail+=!test_wait(&inbound,1);
+    fail+=!test_wait(&outbound,1);
+    fail+=(inbound.size!=4U||memcmp(inbound.data,"ping",4U)!=0);
+    fail+=(outbound.size!=4U||memcmp(outbound.data,"pong",4U)!=0);
+    client_port=inbound.last_port;
+    fail+=(kc_netl_send(client,"ping",4U,NULL)!=KC_NETL_OK);
+    fail+=!test_wait(&inbound,2);
+    fail+=!test_wait(&outbound,2);
+    fail+=(inbound.last_port!=client_port);
+    fail+=(inbound.size!=4U||memcmp(inbound.data,"ping",4U)!=0);
+    fail+=(outbound.size!=4U||memcmp(outbound.data,"pong",4U)!=0);
+    kc_netl_close(client);
+    kc_netl_close(server);
+    case_result(fail,"kc_netl_tcp_remote",
+        "prepares one interface and reuses it for TCP sends");
+    return fail!=0;
+}
+
+#if defined(KC_CLI_PATH) && !defined(__EMSCRIPTEN__)
+
+/**
+ * Run the netl CLI with output discarded.
+ * @param args Arguments appended after the executable.
+ * @return 0 on success, 1 on failure.
+ */
+static int netl_cli_run(const char *args) {
+    char command[4096];
+
+#ifdef _WIN32
+    snprintf(command, sizeof(command), "\"\"%s\" %s > NUL 2>&1\"",
+        KC_CLI_PATH, args);
+#else
+    snprintf(command, sizeof(command), "\"%s\" %s > /dev/null 2>&1",
+        KC_CLI_PATH, args);
+#endif
+    return system(command) == 0 ? 0 : 1;
+}
+
+/**
+ * Test CLI argument handling for listener administration.
+ * @return 0 on success, 1 on failure.
+ */
+static int case_netl_cli(void) {
+    int fail = 0;
+
+    fail += netl_cli_run("--help");
+    fail += netl_cli_run("--version");
+    fail += netl_cli_run("") == 0;
+    fail += netl_cli_run("sample invalid-endpoint") == 0;
+    fail += netl_cli_run("sample 0.0.0.0:8080 true --unknown") == 0;
+    fail += netl_cli_run("bad/name -d") == 0;
+    fail += netl_cli_run("nonexistent") == 0;
+    fail += netl_cli_run("sender 127.0.0.1:invalid -t udp") == 0;
+    fail += netl_cli_run("sender badendpoint -t udp") == 0;
+    {
+        char create[256],listed[256],remove[256];
+        unsigned short port=(unsigned short)(20000U+
+            ((unsigned)time(NULL)%15000U));
+        snprintf(create,sizeof(create),
+            "contract_%u 127.0.0.1:%u -t udp",
+            (unsigned)port,(unsigned)port);
+        snprintf(listed,sizeof(listed),"-l contract_%u",(unsigned)port);
+        snprintf(remove,sizeof(remove),"contract_%u -d",(unsigned)port);
+        fail += netl_cli_run(create);
+        fail += netl_cli_run(listed);
+        fail += netl_cli_run(remove);
+    }
+    case_result(fail,"netl_cli","validates command-line net arguments and errors");
+    return fail != 0;
+}
+#ifndef _WIN32
+
+/**
+ * Reconnect while disconnected CLI commands are still running.
+ * @return Zero on success.
+ */
+static int case_netl_reconnect(void)
+{
+    unsigned short port=test_port(KC_NETL_TCP);
+    char command[256],remove[128];
+    struct sockaddr_in address={0};
+    int fail=0;
+    unsigned i;
+
+    snprintf(command,sizeof(command),
+        "reconnect_%ld 127.0.0.1:%u 'cat; sleep 1'",
+        (long)getpid(),(unsigned)port);
+    snprintf(remove,sizeof(remove),"reconnect_%ld -d",(long)getpid());
+    if(!port||netl_cli_run(command)!=0){
+        case_result(1,"netl_reconnect","isolates new TCP command sessions");
+        return 1;
+    }
+    address.sin_family=AF_INET;
+    address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
+    address.sin_port=htons(port);
+    for(i=0;i<64U;i++){
+        int fd=socket(AF_INET,SOCK_STREAM,0);
+        char reply[4];
+        size_t received=0;
+
+        if(fd<0){fail=1;break;}
+        if(connect(fd,(struct sockaddr *)&address,sizeof(address))!=0 ||
+            send(fd,"ping",4U,0)!=4){
+            close(fd);fail=1;break;
+        }
+        while(received<sizeof(reply)){
+            fd_set ready;
+            struct timeval timeout={2,0};
+            ssize_t amount;
+
+            FD_ZERO(&ready);
+            FD_SET(fd,&ready);
+            if(select(fd+1,&ready,NULL,NULL,&timeout)!=1)break;
+            amount=recv(fd,reply+received,sizeof(reply)-received,0);
+            if(amount<=0)break;
+            received+=(size_t)amount;
+        }
+        close(fd);
+        if(received!=sizeof(reply)||memcmp(reply,"ping",4U)!=0){
+            fail=1;break;
+        }
+    }
+    test_sleep(1200U);
+    fail+=netl_cli_run(remove);
+    case_result(fail,"netl_reconnect","isolates new TCP command sessions");
+    return fail!=0;
+}
+#endif
+#endif
+
+/**
+ * Run the public contract test suite.
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @return Failure count.
+ */
+int main(int argc,char **argv)
+{
+    int fails=0,total=0;
+#ifdef _WIN32
+    WSADATA winsock;
+    if(WSAStartup(MAKEWORD(2,2),&winsock)!=0)return 1;
+#endif
+    if(argc!=2){fprintf(stderr,"expected test case\n");return 2;}
+    if(strcmp(argv[1],"all")==0){
+#if defined(KC_CLI_PATH) && !defined(__EMSCRIPTEN__)
+        test_case_total=11;
+#ifndef _WIN32
+        test_case_total++;
+#endif
+#else
+        test_case_total=10;
+#endif
+        test_case_current=0;
+        fails+=case_open();total++;
+        fails+=case_tcp_open_failure();total++;
+        fails+=case_udp();total++;
+        fails+=case_tcp();total++;
+        fails+=case_invalid_destination();total++;
+        fails+=case_udp_multidestination();total++;
+        fails+=case_udp_default_destination();total++;
+        fails+=case_tcp_destination();total++;
+        fails+=case_tcp_wildcard();total++;
+        fails+=case_tcp_remote();total++;
+#if defined(KC_CLI_PATH) && !defined(__EMSCRIPTEN__)
+        fails+=case_netl_cli();total++;
+#ifndef _WIN32
+        fails+=case_netl_reconnect();total++;
+#endif
+#endif
+        printf("%d passed, %d failed\n",total-fails,fails);
+        return fails;
+    }
+    test_case_total=1;
+    test_case_current=0;
+    if(strcmp(argv[1],"kc_netl_open")==0)return case_open();
+    if(strcmp(argv[1],"kc_netl_tcp_open_failure")==0)return case_tcp_open_failure();
+    if(strcmp(argv[1],"kc_netl_udp")==0)return case_udp();
+    if(strcmp(argv[1],"kc_netl_tcp")==0)return case_tcp();
+    if(strcmp(argv[1],"kc_netl_invalid_destination")==0)return case_invalid_destination();
+    if(strcmp(argv[1],"kc_netl_udp_multidestination")==0)return case_udp_multidestination();
+    if(strcmp(argv[1],"kc_netl_udp_default")==0)return case_udp_default_destination();
+    if(strcmp(argv[1],"kc_netl_tcp_destination")==0)return case_tcp_destination();
+    if(strcmp(argv[1],"kc_netl_tcp_wildcard")==0)return case_tcp_wildcard();
+    if(strcmp(argv[1],"kc_netl_tcp_remote")==0)return case_tcp_remote();
+#if defined(KC_CLI_PATH) && !defined(__EMSCRIPTEN__)
+    if(strcmp(argv[1],"netl_cli")==0)return case_netl_cli();
+#ifndef _WIN32
+    if(strcmp(argv[1],"netl_reconnect")==0)return case_netl_reconnect();
+#endif
+#endif
+    fprintf(stderr,"unknown test case: %s\n",argv[1]);return 2;
+}

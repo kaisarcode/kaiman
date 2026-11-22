@@ -1,0 +1,446 @@
+## Makefile
+## Summary: Cross-compilation builder for kv.
+##
+## Author:  KaisarCode
+## Website: https://kaisarcode.com
+## License: https://www.gnu.org/licenses/lgpl-3.0.html
+
+ANDROID_HOME  ?= $(HOME)/.local/share/android-sdk
+NDK_VERSION   ?= 27.2.12479018
+NDK_DIR       := $(ANDROID_HOME)/ndk/$(NDK_VERSION)
+NDK_TOOLCHAIN := $(NDK_DIR)/build/cmake/android.toolchain.cmake
+XDG_DATA_HOME ?= $(HOME)/.local/share
+OSXCROSS_ROOT ?= $(XDG_DATA_HOME)/osxcross/target
+MACOSX_DEPLOYMENT_TARGET ?= 11.0
+MACOSX_SDK ?= $(lastword $(sort $(wildcard $(OSXCROSS_ROOT)/SDK/MacOSX*.sdk)))
+OSXCROSS_X86_64_CC := $(OSXCROSS_ROOT)/bin/o64-clang
+OSXCROSS_AARCH64_CC := $(OSXCROSS_ROOT)/bin/oa64-clang
+
+IOS_DEPLOYMENT_TARGET ?= 13.0
+IPHONEOS_SDK ?= $(shell ls -d "$(OSXCROSS_ROOT)"/SDK/iPhoneOS*.sdk 2>/dev/null | sort -V | tail -n 1)
+IPHONESIMULATOR_SDK ?= $(shell ls -d "$(OSXCROSS_ROOT)"/SDK/iPhoneSimulator*.sdk 2>/dev/null | sort -V | tail -n 1)
+OSXCROSS_IOS_AARCH64_CC := $(OSXCROSS_ROOT)/bin/ios64-clang
+OSXCROSS_IOSSIM_AARCH64_CC := $(OSXCROSS_ROOT)/bin/iossim64-clang
+OSXCROSS_IOSSIM_X86_64_CC := $(OSXCROSS_ROOT)/bin/iossimx64-clang
+OSXCROSS_X86_64_AR := $(shell ls "$(OSXCROSS_ROOT)"/bin/x86_64-apple-darwin*-ar 2>/dev/null | sort -V | tail -n 1)
+OSXCROSS_AARCH64_AR := $(shell ls "$(OSXCROSS_ROOT)"/bin/aarch64-apple-darwin*-ar 2>/dev/null | sort -V | tail -n 1)
+
+BUILD_DIR := .build
+BIN_DIR   := bin
+WINE ?= wine
+WINE_X86_64_CC ?= x86_64-w64-mingw32-gcc
+WASM_EMCMAKE ?= emcmake
+WASM_EMCC    ?= emcc
+WASM_NODE    ?= node
+
+define cmake_build
+	@prelog=$$(mktemp); \
+	if ! cmake --build $(1) -- -n > "$$prelog" 2>&1; then \
+		cat "$$prelog"; \
+		rm -f "$$prelog"; \
+		exit 1; \
+	fi; \
+	if grep -q "ninja: no work to do." "$$prelog"; then \
+		rm -f "$$prelog"; \
+		out=$$(mktemp); \
+		cmake --build $(1) 2>"$$out"; \
+		r=$$?; \
+		if [ -s "$$out" ]; then grep -v 'skipping incompatible' < "$$out"; fi; \
+		rm -f "$$out"; \
+		exit $$r; \
+	fi; \
+	rm -f "$$prelog"; \
+	out=$$(mktemp); \
+	cmake --build $(1) 2>"$$out"; \
+	r=$$?; \
+	if [ -s "$$out" ]; then grep -v 'skipping incompatible' < "$$out"; fi; \
+	rm -f "$$out"; \
+	if [ $$r -ne 0 ]; then \
+		exit 1; \
+	fi; \
+	if [ -n "$(2)" ]; then \
+		$(2); \
+		log=$$(mktemp); \
+		if ! cmake --build $(1) > "$$log" 2>&1; then \
+			cat "$$log"; \
+			rm -f "$$log"; \
+			exit 1; \
+		fi; \
+		rm -f "$$log"; \
+	fi; \
+	:
+endef
+
+HOST_ARCH       := $(shell uname -m)
+HOST_SYSTEM     := $(shell uname -s)
+NATIVE_ARCH     := unsupported
+NATIVE_PLATFORM := unsupported
+
+ifneq ($(filter x86_64 amd64,$(HOST_ARCH)),)
+NATIVE_ARCH := x86_64
+endif
+
+ifneq ($(filter i386 i686,$(HOST_ARCH)),)
+NATIVE_ARCH := i686
+endif
+
+ifneq ($(filter aarch64 arm64,$(HOST_ARCH)),)
+NATIVE_ARCH := aarch64
+endif
+
+ifneq ($(filter armv7l armv7%,$(HOST_ARCH)),)
+NATIVE_ARCH := armv7
+endif
+
+ifneq ($(filter ppc64le powerpc64le,$(HOST_ARCH)),)
+NATIVE_ARCH := powerpc64le
+endif
+
+ifneq ($(filter riscv64 s390x loongarch64 mips64el mipsel mips,$(HOST_ARCH)),)
+NATIVE_ARCH := $(HOST_ARCH)
+endif
+
+ifeq ($(HOST_SYSTEM),Linux)
+NATIVE_PLATFORM := linux
+endif
+
+ifneq ($(filter MINGW% MSYS% CYGWIN%,$(HOST_SYSTEM)),)
+NATIVE_PLATFORM := windows
+endif
+
+NATIVE_TARGET := $(NATIVE_PLATFORM)/$(NATIVE_ARCH)
+
+.DEFAULT_GOAL := $(NATIVE_TARGET)
+
+.PHONY: all test wine clean \
+	wasm wasm/wasm32 \
+	linux/x86_64 windows/x86_64 macos/x86_64 \
+	linux/i686 windows/i686 \
+	linux/aarch64 android/aarch64 macos/aarch64 \
+	ios/aarch64 iossim/aarch64 iossim/x86_64 \
+	linux/armv7 android/armv7 \
+	linux/armv7hf \
+	linux/riscv64 \
+	linux/powerpc64le \
+	linux/mips linux/mipsel linux/mips64el \
+	linux/s390x \
+	linux/loongarch64
+
+all: \
+	linux/x86_64 windows/x86_64 macos/x86_64 \
+	linux/i686 windows/i686 \
+	linux/aarch64 android/aarch64 macos/aarch64 \
+	ios/aarch64 iossim/aarch64 iossim/x86_64 \
+	linux/armv7 android/armv7 \
+	linux/armv7hf \
+	linux/riscv64 \
+	linux/powerpc64le \
+	linux/mips linux/mipsel linux/mips64el \
+	linux/s390x \
+	linux/loongarch64 \
+	wasm/wasm32
+
+## Linux
+## $(1)=target  $(2)=processor  $(3)=CC
+
+define linux_target
+	@mkdir -p $(BIN_DIR)/linux/$(1)
+	@if [ ! -f $(BUILD_DIR)/$(subst /,-,$(1))-linux/CMakeCache.txt ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/linux/$(1)' $(BUILD_DIR)/$(subst /,-,$(1))-linux/CMakeCache.txt; then \
+		cmake -S . -B $(BUILD_DIR)/$(subst /,-,$(1))-linux \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_SYSTEM_NAME=Linux \
+			-DCMAKE_SYSTEM_PROCESSOR=$(2) \
+			-DCMAKE_C_COMPILER=$(3) \
+			-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BUILD_DIR)/$(subst /,-,$(1))-linux/out \
+			-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) \
+			-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) \
+			-G Ninja -Wno-dev > /dev/null; \
+	fi
+	$(call cmake_build,$(BUILD_DIR)/$(subst /,-,$(1))-linux,cmake -S . -B $(BUILD_DIR)/$(subst /,-,$(1))-linux -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=$(2) -DCMAKE_C_COMPILER=$(3) -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BUILD_DIR)/$(subst /,-,$(1))-linux/out -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) -G Ninja -Wno-dev > /dev/null)
+	@echo "OK linux/$(1)"
+endef
+
+linux/x86_64:
+	$(call linux_target,x86_64,x86_64,gcc)
+
+linux/i686:
+	$(call linux_target,i686,i686,i686-linux-gnu-gcc)
+
+linux/aarch64:
+	$(call linux_target,aarch64,aarch64,aarch64-linux-gnu-gcc)
+
+linux/armv7hf:
+	$(call linux_target,armv7hf,armv7,arm-linux-gnueabihf-gcc)
+
+linux/armv7:
+	$(call linux_target,armv7,armv7,arm-linux-gnueabi-gcc)
+
+linux/riscv64:
+	$(call linux_target,riscv64,riscv64,riscv64-linux-gnu-gcc)
+
+linux/powerpc64le:
+	$(call linux_target,powerpc64le,powerpc64le,powerpc64le-linux-gnu-gcc)
+
+linux/mips:
+	$(call linux_target,mips,mips,mips-linux-gnu-gcc)
+
+linux/mipsel:
+	$(call linux_target,mipsel,mipsel,mipsel-linux-gnu-gcc)
+
+linux/mips64el:
+	$(call linux_target,mips64el,mips64el,mips64el-linux-gnuabi64-gcc)
+
+linux/s390x:
+	$(call linux_target,s390x,s390x,s390x-linux-gnu-gcc)
+
+linux/loongarch64:
+	$(call linux_target,loongarch64,loongarch64,loongarch64-linux-gnu-gcc)
+
+## Windows
+## $(1)=target  $(2)=processor  $(3)=CC
+
+define windows_target
+	@mkdir -p $(BIN_DIR)/windows/$(1)
+	@if [ ! -f $(BUILD_DIR)/$(1)-windows/CMakeCache.txt ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/windows/$(1)' $(BUILD_DIR)/$(1)-windows/CMakeCache.txt; then \
+		cmake -S . -B $(BUILD_DIR)/$(1)-windows \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_SYSTEM_NAME=Windows \
+			-DCMAKE_SYSTEM_PROCESSOR=$(2) \
+			-DCMAKE_C_COMPILER=$(3) \
+			-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BUILD_DIR)/$(1)-windows/out \
+			-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) \
+			-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) \
+			-G Ninja -Wno-dev > /dev/null; \
+	fi
+	$(call cmake_build,$(BUILD_DIR)/$(1)-windows,cmake -S . -B $(BUILD_DIR)/$(1)-windows -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_SYSTEM_PROCESSOR=$(2) -DCMAKE_C_COMPILER=$(3) -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BUILD_DIR)/$(1)-windows/out -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) -G Ninja -Wno-dev > /dev/null)
+	@cp $(BUILD_DIR)/$(1)-windows/out/libkv.dll $(BIN_DIR)/windows/$(1)/libkv.dll
+	@echo "OK windows/$(1)"
+endef
+
+windows/x86_64:
+	$(call windows_target,x86_64,x86_64,x86_64-w64-mingw32-gcc)
+
+windows/i686:
+	$(call windows_target,i686,i686,i686-w64-mingw32-gcc)
+
+## macOS
+
+define macos_target
+	@mkdir -p $(BIN_DIR)/macos/$(1)
+	@if ! $(2) --version > /dev/null 2>&1; then \
+		echo "Missing macOS cross-compiler wrapper: $(2)" >&2; \
+		echo "Set OSXCROSS_ROOT to your osxcross target dir and ensure the wrappers are built." >&2; \
+		exit 1; \
+	fi
+	@export OSXCROSS_HOST=$(1)-apple-darwin25.1 && \
+	export OSXCROSS_TARGET_DIR=$(OSXCROSS_ROOT) && \
+	export OSXCROSS_TARGET=darwin25.1 && \
+	export OSXCROSS_SDK=$(MACOSX_SDK) && \
+	export LD_LIBRARY_PATH="$(OSXCROSS_ROOT)/lib:$${LD_LIBRARY_PATH:-}" && \
+	export PATH="$(OSXCROSS_ROOT)/bin:$$PATH" && \
+	if [ ! -f $(BUILD_DIR)/$(1)-macos/build.ninja ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/macos/$(1)' $(BUILD_DIR)/$(1)-macos/CMakeCache.txt; then \
+		cmake -S . -B $(BUILD_DIR)/$(1)-macos \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_SYSTEM_NAME=Darwin \
+			-DCMAKE_OSX_DEPLOYMENT_TARGET=$(MACOSX_DEPLOYMENT_TARGET) \
+			-DCMAKE_C_COMPILER=$(2) \
+			-DCMAKE_AR=$(OSXCROSS_ROOT)/bin/$(1)-apple-darwin25.1-ar \
+			-DCMAKE_RANLIB=$(OSXCROSS_ROOT)/bin/$(1)-apple-darwin25.1-ranlib \
+			-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BUILD_DIR)/$(1)-macos/out \
+			-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/macos/$(1) \
+			-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/macos/$(1) \
+			-G Ninja -Wno-dev > /dev/null; \
+	fi && \
+	cmake --build $(BUILD_DIR)/$(1)-macos 2>&1 && \
+	echo "OK macos/$(1)"
+endef
+
+macos/x86_64:
+	$(call macos_target,x86_64,$(OSXCROSS_X86_64_CC))
+
+macos/aarch64:
+	$(call macos_target,aarch64,$(OSXCROSS_AARCH64_CC))
+
+## iOS
+## $(1)=platform  $(2)=arch  $(3)=CC  $(4)=SDK  $(5)=ARCH  $(6)=AR
+
+define ios_target
+	@command -v "$(3)" >/dev/null 2>&1 || { echo "Missing iOS compiler: $(3)" >&2; exit 1; }
+	@test -d "$(4)" || { echo "Missing iOS SDK: $(4)" >&2; exit 1; }
+	@test -n "$(6)" && test -x "$(6)" || { echo "Missing iOS archiver: $(6)" >&2; exit 1; }
+	@mkdir -p "$(BIN_DIR)/$(1)/$(2)"
+	@LD_LIBRARY_PATH="$(OSXCROSS_ROOT)/lib" PATH="$(OSXCROSS_ROOT)/bin:$(PATH)" \
+		cmake -S . -B "$(BUILD_DIR)/$(1)-$(2)" -G Ninja \
+		-DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=iOS \
+		-DCMAKE_SYSTEM_PROCESSOR="$(5)" \
+		-DCMAKE_OSX_SYSROOT="$(4)" \
+		-DCMAKE_OSX_ARCHITECTURES="$(5)" \
+		-DCMAKE_OSX_DEPLOYMENT_TARGET="$(IOS_DEPLOYMENT_TARGET)" \
+		-DCMAKE_C_COMPILER="$(3)" -DCMAKE_AR="$(6)" \
+		-DCMAKE_C_FLAGS="-Wno-unused-command-line-argument" \
+		-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY="$(CURDIR)/$(BIN_DIR)/$(1)/$(2)" \
+ >/dev/null
+	@LD_LIBRARY_PATH="$(OSXCROSS_ROOT)/lib" PATH="$(OSXCROSS_ROOT)/bin:$(PATH)" \
+		cmake --build "$(BUILD_DIR)/$(1)-$(2)" --target kv_static
+	@echo "OK $(1)/$(2)"
+endef
+
+ios/aarch64:
+	$(call ios_target,ios,aarch64,$(OSXCROSS_IOS_AARCH64_CC),$(IPHONEOS_SDK),arm64,$(OSXCROSS_AARCH64_AR))
+
+iossim/aarch64:
+	$(call ios_target,iossim,aarch64,$(OSXCROSS_IOSSIM_AARCH64_CC),$(IPHONESIMULATOR_SDK),arm64,$(OSXCROSS_AARCH64_AR))
+
+iossim/x86_64:
+	$(call ios_target,iossim,x86_64,$(OSXCROSS_IOSSIM_X86_64_CC),$(IPHONESIMULATOR_SDK),x86_64,$(OSXCROSS_X86_64_AR))
+
+## Android
+
+define android_target
+	@mkdir -p $(BIN_DIR)/android/$(1)
+	@cache=$(BUILD_DIR)/$(1)-android/CMakeCache.txt && \
+	if [ -f "$$cache" ] && { ! grep -q '^CMAKE_TOOLCHAIN_FILE:.*=$(NDK_TOOLCHAIN)$$' "$$cache" || ! grep -q '^ANDROID_ABI:.*=$(2)$$' "$$cache"; }; then \
+		rm -f "$$cache" $(BUILD_DIR)/$(1)-android/build.ninja && rm -rf $(BUILD_DIR)/$(1)-android/CMakeFiles; \
+	fi
+	@if [ ! -f $(BUILD_DIR)/$(1)-android/CMakeCache.txt ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/android/$(1)' $(BUILD_DIR)/$(1)-android/CMakeCache.txt; then \
+		cmake -S . -B $(BUILD_DIR)/$(1)-android \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_TOOLCHAIN_FILE=$(NDK_TOOLCHAIN) \
+			-DANDROID_ABI=$(2) \
+			-DANDROID_PLATFORM=android-21 \
+			-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BUILD_DIR)/$(1)-android/out \
+			-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/android/$(1) \
+			-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/android/$(1) \
+			-G Ninja -Wno-dev > /dev/null; \
+	fi
+	$(call cmake_build,$(BUILD_DIR)/$(1)-android,cmake -S . -B $(BUILD_DIR)/$(1)-android -DCMAKE_BUILD_TYPE=Release -DCMAKE_TOOLCHAIN_FILE=$(NDK_TOOLCHAIN) -DANDROID_ABI=$(2) -DANDROID_PLATFORM=android-21 -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BUILD_DIR)/$(1)-android/out -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/android/$(1) -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/android/$(1) -G Ninja -Wno-dev > /dev/null)
+	@echo "OK android/$(1)"
+endef
+
+android/aarch64:
+	$(call android_target,aarch64,arm64-v8a)
+
+android/armv7:
+	$(call android_target,armv7,armeabi-v7a)
+
+## WebAssembly
+
+define wasm_target
+	@if ! command -v $(WASM_EMCMAKE) >/dev/null 2>&1 || ! command -v $(WASM_EMCC) >/dev/null 2>&1; then \
+		echo "Missing Emscripten SDK toolchain: $(WASM_EMCMAKE)/$(WASM_EMCC)" >&2; \
+		echo "Install the Emscripten SDK and add emcmake/emcc to PATH (e.g. 'source emsdk_env.sh')." >&2; \
+		exit 1; \
+	fi
+	@mkdir -p $(BIN_DIR)/wasm/wasm32
+	@if [ ! -f $(BUILD_DIR)/wasm32-wasm/CMakeCache.txt ]; then \
+		$(WASM_EMCMAKE) cmake -S . -B $(BUILD_DIR)/wasm32-wasm \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BUILD_DIR)/wasm32-wasm/out \
+			-G Ninja -Wno-dev > /dev/null; \
+	fi
+	$(call cmake_build,$(BUILD_DIR)/wasm32-wasm,wasm_log=$$(mktemp); if ! $(WASM_EMCMAKE) cmake -S . -B $(BUILD_DIR)/wasm32-wasm -DCMAKE_BUILD_TYPE=Release -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BUILD_DIR)/wasm32-wasm/out -G Ninja -Wno-dev > "$$wasm_log" 2>&1; then cat "$$wasm_log"; rm -f "$$wasm_log"; exit 1; fi; rm -f "$$wasm_log")
+	@cp $(BUILD_DIR)/wasm32-wasm/out/libkv.mjs $(BIN_DIR)/wasm/wasm32/libkv.mjs
+	@cp src/libkv.js $(BIN_DIR)/wasm/wasm32/libkv.js
+	@printf '%s\n' '{"type":"module"}' > $(BIN_DIR)/wasm/wasm32/package.json
+	@cp $(BUILD_DIR)/wasm32-wasm/out/libkv.wasm $(BIN_DIR)/wasm/wasm32/libkv.wasm
+	@cp $(BUILD_DIR)/wasm32-wasm/out/libkv.a $(BIN_DIR)/wasm/wasm32/libkv.a
+	@cp $(BUILD_DIR)/wasm32-wasm/out/libkv.so $(BIN_DIR)/wasm/wasm32/libkv.so
+	@echo "OK wasm/wasm32"
+endef
+
+wasm/wasm32:
+	$(call wasm_target)
+
+## Utility
+
+test:
+	@if [ -n "$(filter wine,$(MAKECMDGOALS))" ]; then \
+		if ! command -v wine > /dev/null 2>&1; then \
+			echo "wine is required for make test wine" >&2; \
+			exit 1; \
+		fi; \
+		if ! command -v x86_64-w64-mingw32-gcc > /dev/null 2>&1; then \
+			echo "x86_64-w64-mingw32-gcc is required for make test wine" >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f "$(CURDIR)/$(BIN_DIR)/windows/x86_64/libkv.dll" ]; then \
+			echo "missing Windows shared library: run make windows/x86_64 first" >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f "$(CURDIR)/$(BIN_DIR)/windows/x86_64/libkv.dll.a" ] || [ ! -f "$(CURDIR)/$(BIN_DIR)/windows/x86_64/kv.exe" ]; then \
+			echo "missing Windows CLI or import library: run make windows/x86_64 first" >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f "$(BUILD_DIR)/test-wine/CMakeCache.txt" ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/windows/x86_64' "$(BUILD_DIR)/test-wine/CMakeCache.txt"; then \
+			cmake -S . -B $(BUILD_DIR)/test-wine \
+				-DCMAKE_BUILD_TYPE=Release \
+				-DCMAKE_SYSTEM_NAME=Windows \
+				-DCMAKE_C_COMPILER=$(WINE_X86_64_CC) \
+				-DCMAKE_CROSSCOMPILING_EMULATOR=$(WINE) \
+				-DKV_BUILD_TESTS=ON \
+				-DKV_TEST_SHARED_LIBRARY=$(CURDIR)/$(BIN_DIR)/windows/x86_64/libkv.dll \
+				-DKV_TEST_IMPORT_LIBRARY=$(CURDIR)/$(BIN_DIR)/windows/x86_64/libkv.dll.a \
+				-G Ninja -Wno-dev > /dev/null; \
+		fi; \
+		cmake -S . -B $(BUILD_DIR)/test-wine -DKV_CLI_PATH=$(CURDIR)/$(BIN_DIR)/windows/x86_64/kv.exe > /dev/null || exit 1; \
+		cmake --build $(BUILD_DIR)/test-wine --target kv_contract_test || exit 1; \
+		EGL_LOG_LEVEL=fatal WINEDEBUG=-all $(WINE) $(BUILD_DIR)/test-wine/kv_contract_test.exe all; \
+	elif [ -n "$(filter wasm,$(MAKECMDGOALS))" ]; then \
+		if ! command -v $(WASM_EMCMAKE) >/dev/null 2>&1 || ! command -v $(WASM_EMCC) >/dev/null 2>&1; then \
+			echo "Missing Emscripten SDK toolchain: $(WASM_EMCMAKE)/$(WASM_EMCC)" >&2; \
+			echo "Install the Emscripten SDK and add emcmake/emcc to PATH (e.g. 'source emsdk_env.sh')." >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f $(BIN_DIR)/wasm/wasm32/libkv.wasm ]; then \
+			echo "Missing $(BIN_DIR)/wasm/wasm32/libkv.wasm. Run 'make wasm/wasm32' first." >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f $(BUILD_DIR)/test-wasm/CMakeCache.txt ]; then \
+			$(WASM_EMCMAKE) cmake -S . -B $(BUILD_DIR)/test-wasm \
+				-DCMAKE_BUILD_TYPE=Release \
+				-DKV_BUILD_TESTS=ON \
+				-G Ninja -Wno-dev > /dev/null; \
+		fi; \
+		cmake --build $(BUILD_DIR)/test-wasm --target kv_contract_test || exit 1; \
+		if [ -n "$(EMSDK_NODE)" ]; then node="$(EMSDK_NODE)"; else node="$(WASM_NODE)"; fi; \
+		if ! command -v "$$node" >/dev/null 2>&1; then \
+			echo "Missing Emscripten test runtime: $$node" >&2; \
+			exit 1; \
+		fi; \
+		"$$node" src/testjs.mjs $(BUILD_DIR)/test-wasm/kv_contract_test.js; \
+	else \
+		if [ "$(NATIVE_ARCH)" = "unsupported" ] || [ "$(NATIVE_PLATFORM)" = "unsupported" ]; then \
+			echo "Unsupported native target $(HOST_ARCH)/$(HOST_SYSTEM)" >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f "$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)/libkv.so" ] || [ ! -f "$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)/kv" ]; then \
+			echo "missing native shared library: run make first" >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f "$(BUILD_DIR)/test/CMakeCache.txt" ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)' "$(BUILD_DIR)/test/CMakeCache.txt"; then \
+			cmake -S . -B $(BUILD_DIR)/test \
+				-DCMAKE_BUILD_TYPE=Release \
+				-DKV_BUILD_TESTS=ON \
+				-DKV_TEST_SHARED_LIBRARY=$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)/libkv.so \
+				-G Ninja -Wno-dev > /dev/null; \
+		fi; \
+		cmake -S . -B $(BUILD_DIR)/test -DKV_CLI_PATH=$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)/kv > /dev/null || exit 1; \
+		cmake --build $(BUILD_DIR)/test --target kv_contract_test || exit 1; \
+		$(BUILD_DIR)/test/kv_contract_test all; \
+	fi
+
+wine:
+	@if [ -z "$(filter test,$(MAKECMDGOALS))" ]; then \
+		echo "Use 'make test wine' to run tests through Wine." >&2; \
+		exit 1; \
+	fi
+
+wasm:
+	@if [ -z "$(filter test,$(MAKECMDGOALS))" ]; then \
+		echo "Use 'make test wasm' to run tests through Emscripten and Node.js." >&2; \
+		exit 1; \
+	fi
+
+clean:
+	@rm -rf $(BUILD_DIR)
+	@echo "OK clean"
