@@ -20,13 +20,16 @@
 static void usage(void) {
     printf("kaiman - unified AI service manager\n\n");
     printf("Usage:\n");
-    printf("  kaiman --help\n");
-    printf("  kaiman --version\n");
-    printf("  kaiman service add NAME [key=value ...]\n");
-    printf("  kaiman service list\n");
-    printf("  kaiman service edit NAME [key=value ...]\n");
-    printf("  kaiman service remove NAME\n");
-    printf("  kaiman serve [--listen host:port]\n\n");
+    printf("  kaiman <command> [arguments]\n\n");
+    printf("Commands:\n");
+    printf("  service add NAME [key=value ...]\n");
+    printf("  service list\n");
+    printf("  service edit NAME [key=value ...]\n");
+    printf("  service remove NAME\n");
+    printf("  serve [--listen host:port]\n\n");
+    printf("Options:\n");
+    printf("  -h, --help                  Show this help\n");
+    printf("  -v, --version               Show version\n\n");
     printf("Service keys: adapter, url, model, env, token-command,\n");
     printf("  scheme, user, timeout\n");
 }
@@ -224,11 +227,12 @@ int main(int argc, char **argv) {
         usage();
         return 1;
     }
-    if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "help") == 0) {
+    if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0 ||
+        strcmp(argv[1], "help") == 0) {
         usage();
         return 0;
     }
-    if (strcmp(argv[1], "--version") == 0) {
+    if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0) {
         printf("%s\n", kc_kaiman_version());
         return 0;
     }

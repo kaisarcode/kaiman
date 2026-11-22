@@ -62,7 +62,9 @@ this project yet.
 ## CLI
 
 ```sh
+kaiman -h
 kaiman --help
+kaiman -v
 kaiman --version
 kaiman service add local-opencode adapter=opencode \
   url=http://127.0.0.1:49374 model=opencode/big-pickle \
@@ -122,4 +124,6 @@ Use `make clean` only when a full rebuild is required.
 
 ## License
 
-LGPL-3.0-only. See `LICENSE`.
+[![LGPLv3](https://www.gnu.org/graphics/lgplv3-147x51.png)](https://www.gnu.org/licenses/lgpl-3.0.html)
+
+This project is distributed under the **GNU Lesser General Public License version 3 (LGPLv3)**.

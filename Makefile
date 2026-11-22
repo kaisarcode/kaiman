@@ -297,7 +297,9 @@ test:
 			LD_LIBRARY_PATH="$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET):$$LD_LIBRARY_PATH" \
 			DYLD_LIBRARY_PATH="$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET):$$DYLD_LIBRARY_PATH" \
 			./kaiman-test config.ini || exit 1; \
-			if ./kaiman --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' && \
+			if ./kaiman -v | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' && \
+			./kaiman -h | grep -q '^Usage:' && \
+			./kaiman --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' && \
 			./kaiman --help | grep -q '^Usage:' && \
 			env XDG_CONFIG_HOME=./cli-config \
 			./kaiman service add demo adapter=opencode url=http://127.0.0.1:49374 model=demo/model && \
