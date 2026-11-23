@@ -150,22 +150,22 @@ submodules:
 
 deps: submodules
 	@mkdir -p "$(DEP_LIB_DIR)"
-	@for name in $(DEP_NAMES); do \
-		log=$$(mktemp) || exit 1; \
-		printf '==> lib%s $(TARGET)\n' "$$name"; \
-		$(MAKE) -s --no-print-directory -C "$(DEP_ROOT)/lib$$name.c" "$(TARGET)" > "$$log" 2>&1; \
-		status=$$?; \
-		sed -e '/^emcmake: cmake -S /d' \
-			-e "s|^OK $(TARGET)$$|OK lib$$name $(TARGET)|" "$$log"; \
-		rm -f "$$log"; \
-		[ "$$status" -eq 0 ] || exit "$$status"; \
+	@log=$$(mktemp) || exit 1; \
+	for name in $(DEP_NAMES); do \
+		if ! $(MAKE) -s --no-print-directory -C "$(DEP_ROOT)/lib$$name.c" "$(TARGET)" > "$$log" 2>&1; then \
+			echo "kaiman: dependency lib$$name failed for $(TARGET)" >&2; \
+			cat "$$log" >&2; \
+			rm -f "$$log"; \
+			exit 1; \
+		fi; \
 		source="$(DEP_ROOT)/lib$$name.c/bin/$(TARGET)/lib$$name.a"; \
 		target="$(DEP_LIB_DIR)/lib$$name.a"; \
-		test -f "$$source" || { echo "kaiman: missing dependency for $(TARGET): $$source" >&2; exit 1; }; \
+		test -f "$$source" || { echo "kaiman: missing dependency for $(TARGET): $$source" >&2; rm -f "$$log"; exit 1; }; \
 		if ! cmp -s "$$source" "$$target"; then \
-			cp "$$source" "$$target" || exit 1; \
+			cp "$$source" "$$target" || { rm -f "$$log"; exit 1; }; \
 		fi; \
-	done
+	done; \
+	rm -f "$$log"
 
 OUT_DIR = $(BIN_DIR)/$(TARGET)
 OUT_SHARED = $(OUT_DIR)/libkaiman.$(TARGET_EXT)
@@ -243,7 +243,12 @@ build-target: check-deps
 	fi; \
 	cat "$$configure_errors" >&2; \
 	rm -f "$$configure_errors"; \
-	cmake --build "$(BUILD_TARGET_DIR)" || exit 1
+	build_log="$$(mktemp)"; \
+	cmake --build "$(BUILD_TARGET_DIR)" 2>&1 > "$$build_log"; \
+	build_status=$$?; \
+	if [ "$$build_status" -ne 0 ]; then cat "$$build_log" >&2; fi; \
+	rm -f "$$build_log"; \
+	exit "$$build_status"
 	@echo "OK kaiman $(TARGET)"
 
 NATIVE_SHARED := $(BIN_DIR)/$(NATIVE_TARGET)/libkaiman.$(NATIVE_EXT)

@@ -1,5 +1,5 @@
 /**
- * main.c - Command line frontend for kaiman.
+ * kaiman.c - Command line frontend for kaiman.
  * Summary: Manages saved AI services and the gateway listen address.
  *
  * Author:  KaisarCode

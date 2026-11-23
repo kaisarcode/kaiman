@@ -64,7 +64,7 @@ if(NOT KC_LIBRARY_ONLY)
     target_link_options(kaiman_shared PRIVATE ${KC_LINK_FLAGS})
     target_link_libraries(kaiman_shared PRIVATE ${KC_LIBS} ${KC_SYSTEM_LINKS})
 
-    add_executable(kaiman_cli src/main.c)
+    add_executable(kaiman_cli src/kaiman.c)
     set_target_properties(kaiman_cli PROPERTIES OUTPUT_NAME "kaiman")
     target_compile_options(kaiman_cli PRIVATE -O2 -Wall -Wextra -Werror)
     target_link_libraries(kaiman_cli PRIVATE kaiman_static ${KC_LIBS} ${KC_SYSTEM_LINKS})
