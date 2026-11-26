@@ -62,6 +62,8 @@ DARWIN_SYSTEM_LIBS := -Wl,-framework,Security -Wl,-framework,CoreFoundation -lm
 ANDROID_TARGETS := android/aarch64 android/armv7
 SUPPORTED_TARGETS := $(LINUX_TARGETS) $(WINDOWS_TARGETS) \
     $(MACOS_TARGETS) $(IOS_TARGETS) $(ANDROID_TARGETS)
+GUI_TARGETS := linux/x86_64 windows/x86_64 macos/x86_64 macos/aarch64
+TARGET_GUI := $(if $(filter $(TARGET),$(GUI_TARGETS)),1,)
 
 .DEFAULT_GOAL := $(NATIVE_TARGET)
 .PHONY: all test wine clean build-target check-deps submodules deps $(SUPPORTED_TARGETS)
@@ -137,6 +139,9 @@ $(eval $(call android_target,armv7,armv7a-linux-androideabi))
 
 DEP_ROOT := lib/kaisarcode
 DEP_NAMES := http netl tls
+ifneq ($(strip $(TARGET_GUI)),)
+DEP_NAMES += wvw
+endif
 TLS_SHARED_NAME := libtls.so
 TLS_IMPORT_NAME :=
 ifeq ($(findstring windows/,$(TARGET)),windows/)
@@ -225,6 +230,8 @@ build-target: check-deps
 	esac; \
 	extra=""; \
 	library_only=""; \
+	gui_args=""; \
+	if [ -n "$(TARGET_GUI)" ]; then gui_args="-DKC_GUI=1"; fi; \
 	case "$(TARGET)" in \
 		android/*) \
 			case "$(TARGET)" in \
@@ -257,7 +264,7 @@ build-target: check-deps
 			$$compiler_args $$ar_args \
 			-DCMAKE_C_FLAGS="$(TARGET_CFLAGS)" \
 			-DKC_TARGET="$(TARGET)" \
-			$$library_only \
+			$$library_only $$gui_args \
 			-DKC_SHARED_FLAGS="$(TARGET_SHARED)" \
 			-DKC_SYSTEM_LIBS="$(TARGET_SYSTEM_LIBS)" \
 			$$extra > /dev/null 2> "$$configure_errors"; \

@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>kaiman</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header class="app-header">
+        <div class="identity">
+            <h1>kaiman</h1>
+            <p>Service manager and gateway</p>
+        </div>
+        <div class="header-actions">
+            <button class="button button-primary" id="start-gateway" type="button">Start gateway</button>
+            <button class="button" id="stop-gateway" type="button">Stop gateway</button>
+            <button class="button" id="quit" type="button">Close</button>
+        </div>
+    </header>
+    <main class="workspace">
+        <section class="panel panel-services" aria-labelledby="services-heading">
+            <div class="panel-heading">
+                <h2 id="services-heading">Services</h2>
+                <button class="button button-small" id="new-service" type="button">New service</button>
+            </div>
+            <div class="service-list" id="service-list"></div>
+        </section>
+        <section class="panel panel-editor" aria-labelledby="editor-heading">
+            <div class="panel-heading">
+                <h2 id="editor-heading">Add service</h2>
+            </div>
+            <form class="service-form" id="service-form">
+                <div class="field">
+                    <label for="field-name">Name</label>
+                    <input id="field-name" name="name" type="text" autocomplete="off" required>
+                </div>
+                <div class="field-row">
+                    <div class="field">
+                        <label for="field-adapter">Adapter</label>
+                        <select id="field-adapter" name="adapter">
+                            <option value="openai">openai</option>
+                            <option value="opencode">opencode</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label for="field-scheme">Scheme</label>
+                        <select id="field-scheme" name="scheme">
+                            <option value="none">none</option>
+                            <option value="bearer">bearer</option>
+                            <option value="basic">basic</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="field-url">URL</label>
+                    <input id="field-url" name="url" type="text" autocomplete="off">
+                </div>
+                <div class="field">
+                    <label for="field-model">Model</label>
+                    <input id="field-model" name="model" type="text" autocomplete="off">
+                </div>
+                <div class="field-row">
+                    <div class="field">
+                        <label for="field-env">Environment variable</label>
+                        <input id="field-env" name="env" type="text" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label for="field-timeout">Timeout</label>
+                        <input id="field-timeout" name="timeout" type="number" min="1" max="600" value="60">
+                    </div>
+                </div>
+                <div class="field">
+                    <label for="field-token-command">Token command</label>
+                    <input id="field-token-command" name="token-command" type="text" autocomplete="off">
+                </div>
+                <div class="field">
+                    <label for="field-user">User</label>
+                    <input id="field-user" name="user" type="text" autocomplete="off">
+                </div>
+                <div class="form-actions">
+                    <button class="button button-primary" id="save-service" type="submit">Save service</button>
+                    <button class="button button-danger" id="remove-service" type="button" hidden>Remove</button>
+                    <button class="button" id="cancel-edit" type="button" hidden>Cancel</button>
+                </div>
+            </form>
+        </section>
+        <section class="panel panel-gateway" aria-labelledby="gateway-heading">
+            <div class="panel-heading">
+                <h2 id="gateway-heading">Gateway</h2>
+            </div>
+            <dl class="details">
+                <dt>State</dt>
+                <dd id="gateway-state" class="state state-idle">Loading</dd>
+                <dt>Address</dt>
+                <dd class="mono" id="gateway-address"></dd>
+                <dt>Configuration</dt>
+                <dd class="mono" id="config-path"></dd>
+                <dt>Version</dt>
+                <dd class="mono" id="version"></dd>
+            </dl>
+            <div class="field">
+                <label for="listen">Listen address</label>
+                <input id="listen" name="listen" type="text" autocomplete="off">
+            </div>
+            <button class="button" id="apply-listen" type="button">Save address</button>
+        </section>
+    </main>
+    <footer class="status" id="status" role="status" data-kind="info">Ready</footer>
+    <script src="app.js"></script>
+</body>
+</html>

@@ -942,6 +942,20 @@ static int cli_commands(void) {
         }
     }
     {
+        char *arguments[] = { TEST_CLI, "--help", NULL };
+        if (!test_cli_check(arguments, 0, "gui", NULL)) {
+            fprintf(stderr, "CLI gui help failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "gui", "extra", NULL };
+        if (!test_cli_check(arguments, 1, NULL, NULL)) {
+            fprintf(stderr, "CLI gui argument check failed\n");
+            goto done;
+        }
+    }
+    {
         char *arguments[] = { TEST_CLI, "add", "demo", "adapter=openai",
             "url=http://127.0.0.1:49374", "model=demo/model",
             "scheme=none", "timeout=5", NULL };

@@ -10,6 +10,7 @@
   "dependencies": [
     "libhttp",
     "libnetl",
-    "libtls"
+    "libtls",
+    "libwvw"
   ]
 }

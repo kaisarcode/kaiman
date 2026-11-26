@@ -9,6 +9,10 @@
 
 #include "libkaiman.h"
 
+#ifdef KC_KAIMAN_GUI
+#include "gui.h"
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,8 +32,11 @@ static void usage(void) {
     printf("  list                            List configured services\n");
     printf("  start                           Start the gateway process\n");
     printf("  stop                            Stop the gateway process\n");
-    printf("  status                          Show gateway process status\n\n");
-    printf("Options:\n");
+    printf("  status                          Show gateway process status\n");
+#ifdef KC_KAIMAN_GUI
+    printf("  gui                             Open the graphical manager\n");
+#endif
+    printf("\nOptions:\n");
     printf("  -h, --help                      Show this help\n");
     printf("  -v, --version                   Show version\n\n");
     printf("Service keys: adapter, url, model, env, token-command,\n");
@@ -340,6 +347,18 @@ int main(int argc, char **argv) {
         printf("%s", description);
         kc_kaiman_free(description);
         return 0;
+    }
+    if (strcmp(argv[1], "gui") == 0) {
+        if (argc != 2) {
+            usage();
+            return 1;
+        }
+#ifdef KC_KAIMAN_GUI
+        return kc_kaiman_gui_run();
+#else
+        fprintf(stderr, "kaiman: GUI is not available in this build\n");
+        return 1;
+#endif
     }
     usage();
     return 1;

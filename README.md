@@ -88,12 +88,17 @@ kaiman remove local-opencode
 kaiman start
 kaiman status
 kaiman stop
+kaiman gui
 ```
 
 `add` and `edit` accept the service keys `adapter`, `url`, `model`, `env`,
 `token-command`, `scheme`, `user` and `timeout`. `start` launches the gateway
 as a detached process, `status` prints its state and address, and `stop`
-terminates it.
+terminates it. `gui` opens a native WebView manager backed by the same public
+library API. The manager lists services and provides add, edit, remove, start,
+stop, status and listen-address controls. It is available only in builds with
+`libwvw`; elsewhere the command reports that the GUI is unavailable and exits
+with status 1.
 
 ## HTTP gateway
 
@@ -154,9 +159,11 @@ Persisted OpenCode session state and the detached gateway PID live under
 ## Dependencies
 
 Dependencies are vendored under `lib/kaisarcode`, following the embdex
-mechanism: `libhttp.c`, `libnetl.c` and `libtls.c`. No runtime dependency is
-installed system-wide. The shared library loads `libtls` from its own directory;
-the static CLI links `libtls` statically.
+mechanism: `libhttp.c`, `libnetl.c`, `libtls.c` and `libwvw.c`. No runtime
+dependency is installed system-wide. The shared library loads `libtls` from its
+own directory; the static CLI links `libtls` statically. The GUI links `libwvw`
+statically into the CLI only for `linux/x86_64`, `windows/x86_64`,
+`macos/x86_64` and `macos/aarch64`.
 
 ## Build
 
@@ -170,7 +177,8 @@ make test wine
 `make` builds the native target and its dependencies. `make test` uses those
 artifacts without rebuilding them. For Wine, run `make windows/x86_64` first.
 `make all` builds every target supported by all dependencies. Each target
-produces one CLI executable and the embeddable library. WASM is not offered
+produces one CLI executable and the embeddable library. GUI targets also
+produce a `gui/` asset directory beside the executable. WASM is not offered
 because `libnetl.c` does not support it.
 
 Use `make clean` only when a full rebuild is required.
