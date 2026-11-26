@@ -109,6 +109,12 @@
     <footer class="status">
         <span class="copyright">© 2026 KaisarCode</span>
         <span id="status" role="status" data-kind="info"></span>
+        <button class="icon-button" id="open-about" type="button" aria-label="About kaiman" title="About kaiman">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3m.08 4h.01"/>
+            </svg>
+        </button>
     </footer>
     <dialog class="dialog" id="remove-dialog" aria-labelledby="remove-heading" aria-describedby="remove-message">
         <form method="dialog">
@@ -119,6 +125,36 @@
                 <button class="button button-primary" type="submit" value="remove">Remove</button>
             </div>
         </form>
+    </dialog>
+    <dialog class="dialog about-dialog" id="about-dialog" aria-labelledby="about-heading" aria-describedby="about-description">
+        <div class="about-header">
+            <h2 id="about-heading">About</h2>
+            <form method="dialog">
+                <button class="icon-button" type="submit" aria-label="Close" title="Close" autofocus>
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m18 6-12 12M6 6l12 12"/>
+                    </svg>
+                </button>
+            </form>
+        </div>
+        <div class="about-brand">
+            <img src="logo-128.png" alt="">
+            <strong>kaiman</strong>
+            <span class="about-slogan">AI in a Snap</span>
+            <span class="about-meta" id="about-version">Version unavailable</span>
+        </div>
+        <p id="about-description">Access models from multiple AI providers through a unified OpenAI-compatible API.</p>
+        <a class="about-link" id="documentation" href="https://gitlab.com/kaisarcode/kaiman.c/-/blob/slave/README.md">
+            <span>Documentation</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M15 3h6v6m0-6L10 14m8-1v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+            </svg>
+        </a>
+        <p class="about-error" id="about-error" role="alert" hidden></p>
+        <div class="about-footer">
+            <span>GNU LGPL 3.0</span>
+            <span>© 2026 KaisarCode</span>
+        </div>
     </dialog>
     <script src="app.js"></script>
 </body>

@@ -19,6 +19,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <shellapi.h>
+#elif defined(__APPLE__)
+#include <crt_externs.h>
+#include <errno.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#else
+#include <gio/gio.h>
+#endif
+
 typedef struct {
     volatile sig_atomic_t stop;
 } kc_gui_state_t;
@@ -456,6 +467,46 @@ static int bridge_quit(kc_gui_state_t *state) {
 }
 
 /**
+ * Open the project documentation using the system browser.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int bridge_open_documentation(void) {
+    const char *url =
+        "https://gitlab.com/kaisarcode/kaiman.c/-/blob/slave/README.md";
+#ifdef _WIN32
+    if ((INT_PTR)ShellExecuteA(NULL, "open", url, NULL, NULL,
+        SW_SHOWNORMAL) <= 32) {
+        return set_error(NULL, KC_KAIMAN_EIO,
+            "Unable to open documentation.");
+    }
+#elif defined(__APPLE__)
+    char *args[] = {"open", (char *)url, NULL};
+    pid_t pid;
+    pid_t waited;
+    int status;
+
+    if (posix_spawn(&pid, "/usr/bin/open", NULL, NULL, args,
+        *_NSGetEnviron()) != 0) {
+        return set_error(NULL, KC_KAIMAN_EIO,
+            "Unable to open documentation.");
+    }
+    do {
+        waited = waitpid(pid, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    if (waited < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        return set_error(NULL, KC_KAIMAN_EIO,
+            "Unable to open documentation.");
+    }
+#else
+    if (!g_app_info_launch_default_for_uri(url, NULL, NULL)) {
+        return set_error(NULL, KC_KAIMAN_EIO,
+            "Unable to open documentation.");
+    }
+#endif
+    return set_success();
+}
+
+/**
  * Dispatch one NativeBridge method to the library.
  * @param wvw Open WebView, unused.
  * @param method Method name.
@@ -486,6 +537,8 @@ static int bridge_callback(kc_wvw_t *wvw, const char *method,
         result = bridge_start_gateway();
     } else if (strcmp(method, "stopGateway") == 0) {
         result = bridge_stop_gateway();
+    } else if (strcmp(method, "openDocumentation") == 0) {
+        result = bridge_open_documentation();
     } else if (strcmp(method, "quit") == 0) {
         result = bridge_quit(state);
     } else {
@@ -619,7 +672,7 @@ static void gui_signal(int signum) {
 int kc_kaiman_gui_run(void) {
     static const char *const methods[] = {"state", "addService",
         "setService", "removeService", "setListen", "startGateway",
-        "stopGateway", "quit"};
+        "stopGateway", "openDocumentation", "quit"};
     kc_gui_state_t state;
     kc_wvw_t *wvw = NULL;
     kc_wvw_options_t options;

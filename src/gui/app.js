@@ -354,6 +354,37 @@ async function handleListen() {
 }
 
 /**
+ * Open the application information dialog.
+ * @return void
+ */
+function handleAbout() {
+    var version = currentState.version;
+
+    byId("about-version").textContent = version ? "Version " + version :
+        "Version unavailable";
+    byId("about-error").hidden = true;
+    byId("about-dialog").showModal();
+}
+
+/**
+ * Open the documentation in the system browser.
+ * @param event Link activation event.
+ * @return A promise resolving after the request completes.
+ */
+async function handleDocumentation(event) {
+    var error = byId("about-error");
+
+    event.preventDefault();
+    error.hidden = true;
+    try {
+        await bridge("openDocumentation", null);
+    } catch (failure) {
+        error.textContent = describeError(failure);
+        error.hidden = false;
+    }
+}
+
+/**
  * Attach interface event listeners.
  * @return void
  */
@@ -365,6 +396,8 @@ function bindEvents() {
     byId("remove-dialog").addEventListener("close", handleRemoveConfirm);
     byId("toggle-gateway").addEventListener("click", handleToggle);
     byId("apply-listen").addEventListener("click", handleListen);
+    byId("open-about").addEventListener("click", handleAbout);
+    byId("documentation").addEventListener("click", handleDocumentation);
 }
 
 /**
