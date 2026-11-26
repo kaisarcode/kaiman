@@ -26,6 +26,7 @@ endif
 OSXCROSS_X86_64_CC := $(OSXCROSS_ROOT)/bin/o64-clang
 OSXCROSS_AARCH64_CC := $(OSXCROSS_ROOT)/bin/oa64-clang
 WINE ?= wine
+WINEPATH ?= winepath
 WINE_X86_64_CC ?= x86_64-w64-mingw32-gcc
 
 define cmake_build
@@ -202,6 +203,19 @@ test:
 			echo "Missing Windows cross-compiler: $(WINE_X86_64_CC)" >&2; \
 			exit 1; \
 		fi; \
+		shared_runtime="$${XDG_DATA_HOME:-$$HOME/.local/share}/webview2-runtime"; \
+		if [ -z "$$KC_WEBVIEW2_DIR" ] && [ ! -f "$$shared_runtime/msedgewebview2.exe" ]; then \
+			echo "Missing WebView2 runtime for Wine tests: extract the x64 Fixed Version Runtime CAB into $$shared_runtime (see README), or set KC_WEBVIEW2_DIR" >&2; \
+			exit 1; \
+		fi; \
+		if [ -z "$$KC_WEBVIEW2_DIR" ] && ! command -v $(WINEPATH) >/dev/null 2>&1; then \
+			echo "Missing Wine path helper: $(WINEPATH)" >&2; \
+			exit 1; \
+		fi; \
+		runtime_dir="$$KC_WEBVIEW2_DIR"; \
+		if [ -z "$$runtime_dir" ]; then \
+			runtime_dir=$$($(WINEPATH) -w "$$shared_runtime" 2>/dev/null); \
+		fi; \
 		if [ ! -f $(BUILD_DIR)/test-wine/CMakeCache.txt ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/windows/x86_64' $(BUILD_DIR)/test-wine/CMakeCache.txt; then \
 			cmake -S . -B $(BUILD_DIR)/test-wine \
 				-DCMAKE_BUILD_TYPE=Release \
@@ -218,7 +232,7 @@ test:
 		cp $(BIN_DIR)/windows/x86_64/wvw.exe $(BUILD_DIR)/test-wine/wvw.exe || exit 1; \
 		cp $(BIN_DIR)/windows/x86_64/libwvw.dll $(BUILD_DIR)/test-wine/libwvw.dll || exit 1; \
 		cp $(BIN_DIR)/windows/x86_64/WebView2Loader.dll $(BUILD_DIR)/test-wine/WebView2Loader.dll || exit 1; \
-		EGL_LOG_LEVEL=fatal WINEDEBUG=-all DXVK_LOG_LEVEL=none $(WINE) $(BUILD_DIR)/test-wine/wvw_contract_test.exe all 2>/dev/null; \
+		KC_WEBVIEW2_DIR="$$runtime_dir" EGL_LOG_LEVEL=fatal WINEDEBUG=-all DXVK_LOG_LEVEL=none $(WINE) $(BUILD_DIR)/test-wine/wvw_contract_test.exe all 2>/dev/null; \
 	else \
 		if [ ! -f $(BUILD_DIR)/test/CMakeCache.txt ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)' $(BUILD_DIR)/test/CMakeCache.txt; then \
 			cmake -S . -B $(BUILD_DIR)/test \

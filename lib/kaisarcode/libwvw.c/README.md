@@ -45,8 +45,48 @@ origin restrictions, limits and error handling.
 ## Requirements
 
 Linux builds require GTK 3, WebKitGTK 4.1, and `pkg-config`. Windows execution
-requires the Microsoft Edge WebView2 Runtime. macOS uses AppKit, WebKit, and
-Foundation.
+requires the Microsoft Edge WebView2 Runtime. libwvw uses
+`$XDG_DATA_HOME/webview2-runtime/msedgewebview2.exe` when present, or
+`%LOCALAPPDATA%\KaisarCode\webview2-runtime\msedgewebview2.exe` on Windows, then
+falls back to the installed runtime. Set `KC_WEBVIEW2_DIR` to override that
+default with another directory containing `msedgewebview2.exe`. The runtime is
+not bundled and never belongs in `bin/`, which is a distribution directory.
+See [WebView2 runtime requirements](doc/webview2-runtime.md) for the full
+Windows and Wine checklist. macOS uses AppKit, WebKit, and Foundation.
+
+### WebView2 on Wine
+
+Wine does not install the WebView2 Runtime. To run a Windows libwvw build under
+Wine, download the x64 Fixed Version Runtime CAB from the
+[WebView2 download page](https://developer.microsoft.com/microsoft-edge/webview2/)
+and extract it into the shared user-data directory:
+
+```sh
+runtime="${XDG_DATA_HOME:-$HOME/.local/share}/webview2-runtime"
+mkdir -p "$runtime"
+cabextract -d "$runtime" Microsoft.WebView2.FixedVersionRuntime.*.x64.cab
+fixed=$(find "$runtime" -mindepth 1 -maxdepth 1 -type d \
+    -name 'Microsoft.WebView2.FixedVersionRuntime.*' | head -n 1)
+mv "$fixed"/* "$runtime"/
+rmdir "$fixed"
+```
+
+The CAB uses a versioned subdirectory; move its contents up so
+`$runtime/msedgewebview2.exe` exists. That directory is shared by all projects
+and is the libwvw default, so `make
+test wine` finds it without copying anything into `bin/` or the volatile build
+directory. To keep the runtime elsewhere, extract it there and set
+`KC_WEBVIEW2_DIR` to the Windows path Wine exposes:
+
+```sh
+export KC_WEBVIEW2_DIR='Z:\home\USER\.local\share\webview2-runtime'
+```
+
+`Z:` is Wine's default mapping to the Unix filesystem; adjust it when the prefix
+uses another drive mapping. If neither the default directory nor
+`KC_WEBVIEW2_DIR` is available, `make test wine` stops with instructions instead
+of reporting unrelated WebView test failures. Normal Windows hosts already have
+the Evergreen runtime installed and do not need a local fixed-version runtime.
 
 ## Documentation
 

@@ -443,6 +443,7 @@ done:
 
 typedef HRESULT (STDAPICALLTYPE *kc_wvw_create_environment_fn)(PCWSTR, PCWSTR, ICoreWebView2EnvironmentOptions *, ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *);
 typedef HRESULT (STDAPICALLTYPE *kc_wvw_get_version_fn)(PCWSTR, LPWSTR *);
+typedef HRESULT (STDAPICALLTYPE *kc_wvw_get_version_options_fn)(PCWSTR, ICoreWebView2EnvironmentOptions *, LPWSTR *);
 
 typedef enum {
     KC_WVW_INIT_PENDING,
@@ -551,6 +552,7 @@ struct kc_wvw {
     HICON window_icon;
     HINSTANCE hinstance;
     HMODULE loader;
+    wchar_t *runtime_dir;
     ICoreWebView2Environment *environment;
     ICoreWebView2Controller *controller;
     ICoreWebView2 *webview;
@@ -638,6 +640,7 @@ static void kc_wvw_context_add_ref(kc_wvw_t *ctx) {
 static void kc_wvw_context_destroy(kc_wvw_t *ctx) {
     if (!ctx) return;
     free(ctx->pending_url);
+    free(ctx->runtime_dir);
     kc_wvw_bridge_state_free(&ctx->bridge);
     kc_wvw_config_free(&ctx->opts);
     free(ctx);
@@ -2089,6 +2092,128 @@ static wchar_t *kc_wvw_executable_dir(void) {
 }
 
 /**
+ * Check whether one directory contains a usable fixed-version WebView2 runtime.
+ * @param dir Directory to inspect.
+ * @return Nonzero when msedgewebview2.exe is present.
+ */
+static int kc_wvw_runtime_dir_valid(const wchar_t *dir) {
+    DWORD attributes;
+    wchar_t *browser;
+
+    if (!dir) return 0;
+    attributes = GetFileAttributesW(dir);
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        !(attributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        return 0;
+    }
+    browser = kc_wvw_join_path(dir, L"msedgewebview2.exe");
+    if (!browser) return 0;
+    attributes = GetFileAttributesW(browser);
+    free(browser);
+    return attributes != INVALID_FILE_ATTRIBUTES;
+}
+
+/**
+ * Read one environment variable into a newly allocated wide string.
+ * @param name Environment variable name.
+ * @return Owned value or NULL when unset or empty.
+ */
+static wchar_t *kc_wvw_env_value(const wchar_t *name) {
+    DWORD length;
+    wchar_t *value;
+
+    length = GetEnvironmentVariableW(name, NULL, 0);
+    if (length == 0) return NULL;
+    value = (wchar_t *)malloc((length + 1) * sizeof(wchar_t));
+    if (!value) return NULL;
+    if (GetEnvironmentVariableW(name, value, length) != length - 1 ||
+        value[0] == L'\0') {
+        free(value);
+        return NULL;
+    }
+    return value;
+}
+
+/**
+ * Resolve the shared user-data directory for a fixed-version WebView2 runtime.
+ * @return Newly allocated directory or NULL when no location is configured.
+ */
+static wchar_t *kc_wvw_default_runtime_dir(void) {
+    wchar_t *base;
+    wchar_t *dir;
+
+    base = kc_wvw_env_value(L"XDG_DATA_HOME");
+    if (base) {
+        dir = kc_wvw_join_path(base, L"webview2-runtime");
+        free(base);
+        return dir;
+    }
+    base = kc_wvw_env_value(L"LOCALAPPDATA");
+    if (!base) return NULL;
+    dir = kc_wvw_join_path(base, L"KaisarCode\\webview2-runtime");
+    free(base);
+    return dir;
+}
+
+/**
+ * Resolve the fixed-version WebView2 directory for this process.
+ * @param configured Receives whether KC_WEBVIEW2_DIR is set.
+ * @return Newly allocated absolute runtime directory or NULL when unusable.
+ */
+static wchar_t *kc_wvw_runtime_dir(int *configured) {
+    DWORD length;
+    DWORD full_length;
+    wchar_t *value;
+    wchar_t *dir;
+    wchar_t *runtime;
+
+    if (configured) *configured = 0;
+    length = GetEnvironmentVariableW(L"KC_WEBVIEW2_DIR", NULL, 0);
+    if (length == 0) {
+        runtime = kc_wvw_default_runtime_dir();
+        if (!runtime || !kc_wvw_runtime_dir_valid(runtime)) {
+            free(runtime);
+            return NULL;
+        }
+        return runtime;
+    }
+    if (configured) *configured = 1;
+
+    value = (wchar_t *)malloc((length + 1) * sizeof(wchar_t));
+    if (!value) {
+        return NULL;
+    }
+    if (GetEnvironmentVariableW(L"KC_WEBVIEW2_DIR", value, length) != length - 1 ||
+        value[0] == L'\0') {
+        free(value);
+        return NULL;
+    }
+
+    full_length = GetFullPathNameW(value, 0, NULL, NULL);
+    if (full_length == 0) {
+        free(value);
+        return NULL;
+    }
+    dir = (wchar_t *)malloc((full_length + 1) * sizeof(wchar_t));
+    if (!dir) {
+        free(value);
+        return NULL;
+    }
+    if (GetFullPathNameW(value, full_length, dir, NULL) != full_length - 1) {
+        free(dir);
+        free(value);
+        return NULL;
+    }
+    free(value);
+
+    if (!kc_wvw_runtime_dir_valid(dir)) {
+        free(dir);
+        return NULL;
+    }
+    return dir;
+}
+
+/**
  * Loads WebView2Loader.dll from beside the executable.
  * @param ctx Window context.
  * @return KC_WVW_OK on success or KC_WVW_ERROR on failure.
@@ -2096,6 +2221,13 @@ static wchar_t *kc_wvw_executable_dir(void) {
 static int kc_wvw_load_loader(kc_wvw_t *ctx) {
     wchar_t *dir;
     wchar_t *dll_path;
+    int runtime_configured;
+
+    ctx->runtime_dir = kc_wvw_runtime_dir(&runtime_configured);
+    if (runtime_configured && !ctx->runtime_dir) {
+        kc_wvw_set_error(ctx, "KC_WEBVIEW2_DIR does not contain a WebView2 runtime (expected msedgewebview2.exe)");
+        return KC_WVW_ERROR;
+    }
 
     dir = kc_wvw_executable_dir();
     if (!dir) {
@@ -2575,8 +2707,10 @@ static int kc_wvw_create_window(kc_wvw_t *ctx) {
 static int kc_wvw_start_webview(kc_wvw_t *ctx) {
     kc_wvw_create_environment_fn create_environment;
     kc_wvw_get_version_fn get_version;
+    kc_wvw_get_version_options_fn get_version_options;
     FARPROC create_environment_proc;
     FARPROC get_version_proc;
+    FARPROC get_version_options_proc;
     kc_wvw_environment_handler_t *handler;
     wchar_t *user_data_dir;
     const char *browser_args;
@@ -2584,17 +2718,32 @@ static int kc_wvw_start_webview(kc_wvw_t *ctx) {
     LPWSTR version = NULL;
     HRESULT hr;
 
-    create_environment_proc = GetProcAddress(ctx->loader, "CreateCoreWebView2EnvironmentWithOptions");
-    get_version_proc = GetProcAddress(ctx->loader, "GetAvailableCoreWebView2BrowserVersionString");
+    create_environment_proc = GetProcAddress(ctx->loader,
+        "CreateCoreWebView2EnvironmentWithOptions");
+    get_version_proc = GetProcAddress(ctx->loader,
+        "GetAvailableCoreWebView2BrowserVersionString");
+    get_version_options_proc = GetProcAddress(ctx->loader,
+        "GetAvailableCoreWebView2BrowserVersionStringWithOptions");
     memcpy(&create_environment, &create_environment_proc, sizeof(create_environment));
     memcpy(&get_version, &get_version_proc, sizeof(get_version));
-    if (!create_environment || !get_version) {
+    memcpy(&get_version_options, &get_version_options_proc,
+        sizeof(get_version_options));
+    if (!create_environment || (!get_version && !get_version_options)) {
+        kc_wvw_set_error(ctx, "WebView2Loader.dll is missing required exports");
+        return KC_WVW_ERROR;
+    }
+    if (ctx->runtime_dir && !get_version_options) {
+        kc_wvw_set_error(ctx, "WebView2Loader.dll does not support fixed-version runtimes");
         return KC_WVW_ERROR;
     }
 
-    hr = get_version(NULL, &version);
+    if (get_version_options) {
+        hr = get_version_options(ctx->runtime_dir, NULL, &version);
+    } else {
+        hr = get_version(NULL, &version);
+    }
     if (FAILED(hr) || !version) {
-        kc_wvw_set_error(ctx, "WebView2 version lookup failed: 0x%08lx", (unsigned long)hr);
+        kc_wvw_set_error(ctx, "WebView2 runtime unavailable (0x%08lx): install the WebView2 Runtime or point KC_WEBVIEW2_DIR at a fixed-version runtime", (unsigned long)hr);
         return KC_WVW_ERROR;
     }
     CoTaskMemFree(version);
@@ -2624,11 +2773,12 @@ static int kc_wvw_start_webview(kc_wvw_t *ctx) {
         free(user_data_dir);
         return KC_WVW_ERROR;
     }
-    hr = create_environment(NULL, user_data_dir, NULL, (ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *)handler);
+    hr = create_environment(ctx->runtime_dir, user_data_dir, NULL,
+        (ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *)handler);
     ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler_Release((ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *)handler);
     free(user_data_dir);
     if (FAILED(hr)) {
-        kc_wvw_set_error(ctx, "WebView2 environment creation failed: 0x%08lx", (unsigned long)hr);
+        kc_wvw_set_error(ctx, "WebView2 environment creation failed (0x%08lx): check the selected runtime directory and user-data directory", (unsigned long)hr);
         ctx->init_error = hr;
         return KC_WVW_ERROR;
     }
@@ -2747,7 +2897,7 @@ static DWORD WINAPI kc_wvw_windows_worker(LPVOID data) {
         goto cleanup;
     }
     if (kc_wvw_load_loader(ctx) != KC_WVW_OK) {
-        kc_wvw_set_error(ctx, "WebView2Loader.dll not found");
+        if (!ctx->error[0]) kc_wvw_set_error(ctx, "WebView2Loader.dll not found beside the executable");
         goto cleanup;
     }
     if (kc_wvw_create_window(ctx) != KC_WVW_OK) {
