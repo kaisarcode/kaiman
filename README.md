@@ -32,8 +32,8 @@ Every mutation persists immediately. Status codes follow the kclib convention:
 `KC_KAIMAN_OK`, `KC_KAIMAN_NOT_FOUND`, and negative error codes. Handles are
 borrowed. A removed service handle stays allocated but becomes invalid.
 
-A service descriptor accepts a unique `name`, an `adapter` (`openai` or
-`opencode`), an `http://` or `https://` URL, an upstream `model`, an optional
+A service descriptor accepts a unique `name`, an `adapter` (see the adapter
+list below), an `http://` or `https://` URL, an upstream `model`, an optional
 credential reference (`env` or `token-command`), an `auth` scheme (`none`,
 `bearer` or `basic`), an optional `user`, and a `timeout` from 1 to 600
 seconds. Credentials themselves are never stored.
@@ -149,7 +149,7 @@ unknown path or unknown model returns `404`; an oversized body returns `413`;
 and an unreachable or malformed upstream returns `502`. Upstream responses with
 status `400` or higher are propagated with their status, content type and body.
 
-Two adapters are supported:
+Supported adapters:
 
 - `openai` forwards chat requests to an OpenAI-compatible `/chat/completions`
     endpoint, replacing the request `model` with the configured upstream model
@@ -158,6 +158,21 @@ Two adapters are supported:
     `providerID/modelID`. It reuses one persisted session per upstream server,
     keeps a bounded conversation history, and serializes requests that share
     that session. `stream:true` emits the completed reply as SSE chunks.
+- `anthropic` uses the Messages API (`/messages`). Set the base URL to the API
+    version root and use `scheme=bearer` for the API key.
+- `gemini` uses `generateContent` with the model in the URL. Set the base URL
+    to the API version root and use `scheme=bearer` for the API key.
+- `responses` uses `/responses` with a bearer credential.
+- `ollama` uses `/api/chat` from the server root, normally without authentication.
+- `bedrock` uses `/model/{modelId}/converse` from the regional runtime root
+    with an Amazon Bedrock bearer API key. AWS SigV4 is not supported.
+
+The five native text adapters accept system, user and assistant text messages,
+maximum output tokens, temperature and top-p. Streaming requests emit the
+completed text and finish reason as SSE frames, rather than forwarding live
+provider events. Tool calls, multimodal input and structured output requests
+are not supported by these adapters. Upstream model-specific parameter
+constraints still apply.
 
 ## Configuration
 

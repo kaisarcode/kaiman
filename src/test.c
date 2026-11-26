@@ -314,7 +314,22 @@ static void test_mock_receive(kc_netl_peer_t *peer, const void *data,
     if (size >= sizeof(request)) size = sizeof(request) - 1U;
     memcpy(request, data, size);
     request[size] = '\0';
-    if (strstr(request, "\"stream\":true") != NULL) {
+    if (strstr(request, "/messages") != NULL) {
+        payload = "{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"stop_reason\":\"end_turn\"}";
+        content_type = "application/json";
+    } else if (strstr(request, ":generateContent") != NULL) {
+        payload = "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]},\"finishReason\":\"STOP\"}]}";
+        content_type = "application/json";
+    } else if (strstr(request, "/responses") != NULL) {
+        payload = "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}";
+        content_type = "application/json";
+    } else if (strstr(request, "/api/chat") != NULL) {
+        payload = "{\"message\":{\"role\":\"assistant\",\"content\":\"hello\"},\"done\":true,\"done_reason\":\"stop\"}";
+        content_type = "application/json";
+    } else if (strstr(request, "/converse") != NULL) {
+        payload = "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"hello\"}]}},\"stopReason\":\"end_turn\"}";
+        content_type = "application/json";
+    } else if (strstr(request, "\"stream\":true") != NULL) {
         payload = events;
         content_type = "text/event-stream";
     } else {
@@ -579,6 +594,8 @@ static int integration(const char *path) {
     static const char stream_body[] =
         "{\"model\":\"mock\",\"messages\":[{\"role\":\"user\","
         "\"content\":\"hi\"}],\"stream\":true}";
+    static const char *const adapters[] = {"anthropic", "gemini",
+        "responses", "ollama", "bedrock"};
     kc_kaiman_t *kaiman = NULL;
     kc_kaiman_gateway_t *gateway = NULL;
     kc_kaiman_service_t *service = NULL;
@@ -591,6 +608,7 @@ static int integration(const char *path) {
     size_t size = 0U;
     char *response = NULL;
     int thread_started = 0;
+    size_t index;
     int result = 1;
 
     test_socket_start();
@@ -615,6 +633,15 @@ static int integration(const char *path) {
         fprintf(stderr, "integration setup failed: %s\n",
             kc_kaiman_error(kaiman) != NULL ? kc_kaiman_error(kaiman) : "?");
         goto done;
+    }
+    for (index = 0U; index < sizeof(adapters) / sizeof(adapters[0]); index++) {
+        descriptor.name = adapters[index];
+        descriptor.adapter = adapters[index];
+        descriptor.model = "native-model";
+        if (kc_kaiman_add_service(kaiman, &descriptor, &service) != KC_KAIMAN_OK) {
+            fprintf(stderr, "native adapter setup failed: %s\n", adapters[index]);
+            goto done;
+        }
     }
     kc_kaiman_close(kaiman);
     kaiman = NULL;
@@ -677,6 +704,27 @@ static int integration(const char *path) {
         result = 1;
     }
     free(response);
+    for (index = 0U; index < sizeof(adapters) / sizeof(adapters[0]); index++) {
+        char body[256];
+        int streaming;
+
+        for (streaming = 0; streaming <= 1; streaming++) {
+            (void)snprintf(body, sizeof(body),
+                "{\"model\":\"%s\",\"messages\":[{\"role\":\"system\","
+                "\"content\":\"test\"},{\"role\":\"user\",\"content\":\"hi\"}],"
+                "\"stream\":%s}", adapters[index], streaming ? "true" : "false");
+            response = test_request("POST", "/v1/chat/completions", body, &size);
+            if (response == NULL || strstr(response, "HTTP/1.1 200 OK") == NULL ||
+                strstr(response, adapters[index]) == NULL ||
+                strstr(response, "\"content\":\"hello\"") == NULL ||
+                (streaming && (strstr(response, "text/event-stream") == NULL ||
+                    strstr(response, "data: [DONE]") == NULL))) {
+                fprintf(stderr, "native chat adapter failed: %s\n", adapters[index]);
+                result = 1;
+            }
+            free(response);
+        }
+    }
     if (result == 0) {
         printf("[9/" KC_TEST_TOTAL "] [PASS] gateway_endpoints: health, models, chat and "
             "streaming\n");

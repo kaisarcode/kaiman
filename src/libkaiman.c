@@ -517,8 +517,11 @@ static int apply_field(kc_kaiman_service_t *service, const char *key,
         }
         target = &service->name;
     } else if (strcmp(key, "adapter") == 0) {
-        if (strcmp(value, "openai") != 0 && strcmp(value, "opencode") != 0) {
-            set_error(kaiman, "adapter must be openai or opencode");
+        if (strcmp(value, "openai") != 0 && strcmp(value, "opencode") != 0 &&
+            strcmp(value, "anthropic") != 0 && strcmp(value, "gemini") != 0 &&
+            strcmp(value, "responses") != 0 && strcmp(value, "ollama") != 0 &&
+            strcmp(value, "bedrock") != 0) {
+            set_error(kaiman, "unknown adapter: %s", value);
             return KC_KAIMAN_EINVAL;
         }
         target = &service->adapter;
@@ -2302,6 +2305,589 @@ static char *completion_json(const char *reply, const char *model, int chunk) {
 }
 
 /**
+ * Compare a JSON string with an expected literal.
+ * @param value Borrowed value.
+ * @param expected Expected text.
+ * @return 1 on equality, otherwise 0.
+ */
+static int native_equals(const kc_json_value_t *value, const char *expected) {
+    const char *text = kc_json_text(value);
+
+    return text != NULL && strcmp(text, expected) == 0;
+}
+
+/**
+ * Append a named JSON field with its serialized value.
+ * @param buffer Destination buffer.
+ * @param name Field name.
+ * @param value Borrowed value.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int native_field(kc_buffer_t *buffer, const char *name,
+    const kc_json_value_t *value) {
+    char *text = NULL;
+    int status;
+
+    if (value == NULL) return KC_KAIMAN_OK;
+    status = kc_json_stringify(value, &text);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(buffer, ",\"%s\":%s", name, text);
+    }
+    kc_kaiman_free(text);
+    return status;
+}
+
+/**
+ * Extract text without silently discarding non-text message parts.
+ * @param content Borrowed message content.
+ * @param buffer Destination buffer.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int native_content(const kc_json_value_t *content, kc_buffer_t *buffer) {
+    size_t index;
+    int status = KC_KAIMAN_OK;
+
+    if (kc_json_type(content) == KC_JSON_STRING) {
+        return kc_buffer_text(buffer, kc_json_text(content));
+    }
+    if (kc_json_type(content) != KC_JSON_ARRAY) return KC_KAIMAN_EINVAL;
+    for (index = 0U; index < kc_json_length(content); index++) {
+        const kc_json_value_t *part = kc_json_item(content, index);
+        const char *text = kc_json_text(kc_json_member(part, "text"));
+
+        if (!native_equals(kc_json_member(part, "type"), "text") ||
+            text == NULL) return KC_KAIMAN_EINVAL;
+        status = kc_buffer_text(buffer, text);
+        if (status != KC_KAIMAN_OK) return status;
+    }
+    return status;
+}
+
+/**
+ * Encode messages and separate system instructions when required.
+ * @param root Borrowed Chat Completions request.
+ * @param adapter Selected native adapter.
+ * @param messages Destination message array.
+ * @param system Destination system instructions.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int native_messages(const kc_json_value_t *root, const char *adapter,
+    kc_buffer_t *messages, kc_buffer_t *system) {
+    const kc_json_value_t *items = kc_json_member(root, "messages");
+    int gemini = strcmp(adapter, "gemini") == 0;
+    int bedrock = strcmp(adapter, "bedrock") == 0;
+    int separate = gemini || bedrock || strcmp(adapter, "anthropic") == 0;
+    size_t index;
+    size_t count = 0U;
+    int status;
+
+    if (kc_json_type(items) != KC_JSON_ARRAY ||
+        kc_json_length(items) == 0U) return KC_KAIMAN_EINVAL;
+    status = kc_buffer_text(messages, "[");
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < kc_json_length(items); index++) {
+        const kc_json_value_t *item = kc_json_item(items, index);
+        const char *role = kc_json_text(kc_json_member(item, "role"));
+        kc_buffer_t *content = NULL;
+        int instruction;
+
+        if (role == NULL || kc_json_member(item, "tool_calls") != NULL ||
+            kc_json_member(item, "function_call") != NULL ||
+            kc_json_member(item, "name") != NULL) return KC_KAIMAN_EINVAL;
+        instruction = strcmp(role, "system") == 0 ||
+            strcmp(role, "developer") == 0;
+        if (!instruction && strcmp(role, "user") != 0 &&
+            strcmp(role, "assistant") != 0) return KC_KAIMAN_EINVAL;
+        status = kc_buffer_open(&content);
+        if (status == KC_KAIMAN_OK) {
+            status = native_content(kc_json_member(item, "content"), content);
+        }
+        if (status == KC_KAIMAN_OK && instruction && separate) {
+            if (system->size != 0U) status = kc_buffer_text(system, "\n\n");
+            if (status == KC_KAIMAN_OK) {
+                status = kc_buffer_text(system, kc_buffer_value(content));
+            }
+        } else if (status == KC_KAIMAN_OK) {
+            if (gemini && strcmp(role, "assistant") == 0) role = "model";
+            if (strcmp(role, "developer") == 0 &&
+                strcmp(adapter, "responses") != 0) role = "system";
+            status = kc_buffer_format(messages, "%s{\"role\":",
+                count++ == 0U ? "" : ",");
+            if (status == KC_KAIMAN_OK) {
+                status = json_write_text(messages, role);
+            }
+            if (status == KC_KAIMAN_OK) {
+                status = kc_buffer_text(messages, gemini ? ",\"parts\":[{\"text\":" :
+                    bedrock ? ",\"content\":[{\"text\":" : ",\"content\":");
+            }
+            if (status == KC_KAIMAN_OK) {
+                status = json_write_text(messages, kc_buffer_value(content));
+            }
+            if (status == KC_KAIMAN_OK) {
+                status = kc_buffer_text(messages, gemini || bedrock ? "}]}" : "}");
+            }
+        }
+        kc_buffer_close(content);
+    }
+    if (status == KC_KAIMAN_OK && count == 0U) return KC_KAIMAN_EINVAL;
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(messages, "]");
+    return status;
+}
+
+/**
+ * Build a native text request from the common chat contract.
+ * @param root Borrowed Chat Completions request.
+ * @param service Selected service.
+ * @param body Receives owned native JSON.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int native_body(const kc_json_value_t *root,
+    const kc_kaiman_service_t *service, char **body) {
+    const char *adapter = service->adapter;
+    const kc_json_value_t *max = kc_json_member(root, "max_completion_tokens");
+    const kc_json_value_t *stop = kc_json_member(root, "stop");
+    const kc_json_value_t *temperature = kc_json_member(root, "temperature");
+    const kc_json_value_t *top = kc_json_member(root, "top_p");
+    const kc_json_value_t *n = kc_json_member(root, "n");
+    kc_buffer_t *messages = NULL;
+    kc_buffer_t *system = NULL;
+    kc_buffer_t *buffer = NULL;
+    int gemini = strcmp(adapter, "gemini") == 0;
+    int bedrock = strcmp(adapter, "bedrock") == 0;
+    int anthropic = strcmp(adapter, "anthropic") == 0;
+    int responses = strcmp(adapter, "responses") == 0;
+    int ollama = strcmp(adapter, "ollama") == 0;
+    int status;
+
+    *body = NULL;
+    if (max == NULL) max = kc_json_member(root, "max_tokens");
+    if (kc_json_member(root, "tools") != NULL ||
+        kc_json_member(root, "functions") != NULL ||
+        kc_json_member(root, "tool_choice") != NULL ||
+        kc_json_member(root, "response_format") != NULL ||
+        (n != NULL && kc_json_number(n) != 1.0) ||
+        (max != NULL && (kc_json_type(max) != KC_JSON_NUMBER ||
+            kc_json_number(max) < 1.0 || kc_json_number(max) > INT_MAX)) ||
+        (responses && stop != NULL)) return KC_KAIMAN_EINVAL;
+    if (service->model == NULL || *service->model == '\0') {
+        return KC_KAIMAN_EINVAL;
+    }
+    status = kc_buffer_open(&messages);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&system);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&buffer);
+    if (status == KC_KAIMAN_OK) {
+        status = native_messages(root, adapter, messages, system);
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "{");
+    if (status == KC_KAIMAN_OK && !gemini && !bedrock) {
+        status = kc_buffer_text(buffer, "\"model\":");
+        if (status == KC_KAIMAN_OK) {
+            status = json_write_text(buffer, service->model);
+        }
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, ",");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(buffer, "\"%s\":%s",
+            gemini ? "contents" : responses ? "input" : "messages",
+            kc_buffer_value(messages));
+    }
+    if (status == KC_KAIMAN_OK && system->size != 0U) {
+        status = kc_buffer_text(buffer, gemini ?
+            ",\"systemInstruction\":{\"parts\":[{\"text\":" : bedrock ?
+            ",\"system\":[{\"text\":" : ",\"system\":");
+        if (status == KC_KAIMAN_OK) {
+            status = json_write_text(buffer, kc_buffer_value(system));
+        }
+        if (status == KC_KAIMAN_OK && (gemini || bedrock)) {
+            status = kc_buffer_text(buffer, gemini ? "}]}" : "}]");
+        }
+    }
+    if (status == KC_KAIMAN_OK && !gemini && !bedrock) {
+        status = kc_buffer_text(buffer, ",\"stream\":false");
+    }
+    if (status == KC_KAIMAN_OK && responses) {
+        status = kc_buffer_text(buffer, ",\"store\":false");
+    }
+    if (status == KC_KAIMAN_OK && (gemini || bedrock || ollama)) {
+        status = kc_buffer_format(buffer, ",\"%s\":{",
+            gemini ? "generationConfig" : bedrock ? "inferenceConfig" : "options");
+        if (status == KC_KAIMAN_OK) {
+            status = kc_buffer_format(buffer, "\"%s\":%d",
+                gemini ? "maxOutputTokens" : bedrock ? "maxTokens" : "num_predict",
+                max != NULL ? (int)kc_json_number(max) : 4096);
+        }
+    } else if (status == KC_KAIMAN_OK && (max != NULL || anthropic)) {
+        status = kc_buffer_format(buffer, ",\"%s\":%d",
+            responses ? "max_output_tokens" : "max_tokens",
+            max != NULL ? (int)kc_json_number(max) : 4096);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = native_field(buffer, "temperature", temperature);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = native_field(buffer, gemini || bedrock ? "topP" : "top_p", top);
+    }
+    if (status == KC_KAIMAN_OK && stop != NULL) {
+        const char *key = gemini || bedrock ? "stopSequences" :
+            anthropic ? "stop_sequences" : "stop";
+
+        if (kc_json_type(stop) == KC_JSON_STRING) {
+            status = kc_buffer_format(buffer, ",\"%s\":[", key);
+            if (status == KC_KAIMAN_OK) {
+                status = json_write_text(buffer, kc_json_text(stop));
+            }
+            if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "]");
+        } else if (kc_json_type(stop) == KC_JSON_ARRAY) {
+            status = native_field(buffer, key, stop);
+        } else {
+            status = KC_KAIMAN_EINVAL;
+        }
+    }
+    if (status == KC_KAIMAN_OK && (gemini || bedrock || ollama)) {
+        status = kc_buffer_text(buffer, "}");
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}");
+    if (status == KC_KAIMAN_OK) {
+        *body = kc_util_strdup(kc_buffer_value(buffer));
+        if (*body == NULL) status = KC_KAIMAN_ENOMEM;
+    }
+    kc_buffer_close(buffer);
+    kc_buffer_close(system);
+    kc_buffer_close(messages);
+    return status;
+}
+
+/**
+ * Resolve the native API URL using an encoded model path segment.
+ * @param service Selected service.
+ * @return Owned URL, or NULL on failure.
+ */
+static char *native_url(const kc_kaiman_service_t *service) {
+    const char *adapter = service->adapter;
+    const unsigned char *cursor;
+    const char *model = service->model;
+    kc_buffer_t *path = NULL;
+    char *url = NULL;
+    int gemini = strcmp(adapter, "gemini") == 0;
+    int status;
+
+    if (strcmp(adapter, "anthropic") == 0) {
+        return api_url(service->base_url, "/messages");
+    }
+    if (strcmp(adapter, "responses") == 0) {
+        return api_url(service->base_url, "/responses");
+    }
+    if (strcmp(adapter, "ollama") == 0) {
+        return api_url(service->base_url, "/api/chat");
+    }
+    if (gemini && strncmp(model, "models/", 7U) == 0) model += 7U;
+    status = kc_buffer_open(&path);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(path, gemini ? "/models/" : "/model/");
+    }
+    for (cursor = (const unsigned char *)model;
+        status == KC_KAIMAN_OK && *cursor != '\0'; cursor++) {
+        unsigned char byte = *cursor;
+
+        if ((byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+            (byte >= '0' && byte <= '9') || byte == '-' || byte == '_' ||
+            byte == '.' || byte == '~') {
+            status = kc_buffer_append(path, &byte, 1U);
+        } else {
+            status = kc_buffer_format(path, "%%%02X", (unsigned int)byte);
+        }
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(path, gemini ? ":generateContent" : "/converse");
+    }
+    if (status == KC_KAIMAN_OK) {
+        url = api_url(service->base_url, kc_buffer_value(path));
+    }
+    kc_buffer_close(path);
+    return url;
+}
+
+/**
+ * Extract text blocks from a native assistant message.
+ * @param items Borrowed array of text blocks.
+ * @param reply Destination reply.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int native_blocks(const kc_json_value_t *items, kc_buffer_t *reply) {
+    size_t index;
+    int status = KC_KAIMAN_OK;
+
+    if (kc_json_type(items) != KC_JSON_ARRAY) return KC_KAIMAN_EFORMAT;
+    for (index = 0U; index < kc_json_length(items); index++) {
+        const kc_json_value_t *item = kc_json_item(items, index);
+        const kc_json_value_t *type = kc_json_member(item, "type");
+        const char *text = kc_json_text(kc_json_member(item, "text"));
+
+        if (native_equals(type, "thinking") ||
+            native_equals(type, "redacted_thinking") ||
+            kc_json_boolean(kc_json_member(item, "thought"))) continue;
+        if (native_equals(type, "refusal")) {
+            text = kc_json_text(kc_json_member(item, "refusal"));
+        }
+        if (text == NULL) return KC_KAIMAN_EFORMAT;
+        status = kc_buffer_text(reply, text);
+        if (status != KC_KAIMAN_OK) return status;
+    }
+    return status;
+}
+
+/**
+ * Normalize a native reply to text and a Chat Completions finish reason.
+ * @param adapter Selected adapter.
+ * @param root Borrowed native response.
+ * @param reply Destination reply.
+ * @param finish Receives a stable finish reason.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int native_reply(const char *adapter, const kc_json_value_t *root,
+    kc_buffer_t *reply, const char **finish) {
+    const kc_json_value_t *item;
+    const kc_json_value_t *items;
+    const char *reason = NULL;
+    const char *text;
+    size_t index;
+    int status = KC_KAIMAN_OK;
+
+    *finish = "stop";
+    if (strcmp(adapter, "anthropic") == 0) {
+        reason = kc_json_text(kc_json_member(root, "stop_reason"));
+        status = native_blocks(kc_json_member(root, "content"), reply);
+    } else if (strcmp(adapter, "gemini") == 0) {
+        item = kc_json_item(kc_json_member(root, "candidates"), 0U);
+        reason = kc_json_text(kc_json_member(item, "finishReason"));
+        items = kc_json_member(kc_json_member(item, "content"), "parts");
+        status = native_blocks(items, reply);
+    } else if (strcmp(adapter, "bedrock") == 0) {
+        reason = kc_json_text(kc_json_member(root, "stopReason"));
+        item = kc_json_member(kc_json_member(root, "output"), "message");
+        status = native_blocks(kc_json_member(item, "content"), reply);
+    } else if (strcmp(adapter, "ollama") == 0) {
+        item = kc_json_member(root, "message");
+        text = kc_json_text(kc_json_member(item, "content"));
+        reason = kc_json_text(kc_json_member(root, "done_reason"));
+        if (text == NULL || !kc_json_boolean(kc_json_member(root, "done")) ||
+            kc_json_length(kc_json_member(item, "tool_calls")) != 0U) {
+            return KC_KAIMAN_EFORMAT;
+        }
+        status = kc_buffer_text(reply, text);
+    } else {
+        items = kc_json_member(root, "output");
+        if (kc_json_type(items) != KC_JSON_ARRAY) return KC_KAIMAN_EFORMAT;
+        if (native_equals(kc_json_member(root, "status"), "incomplete")) {
+            item = kc_json_member(root, "incomplete_details");
+            reason = kc_json_text(kc_json_member(item, "reason"));
+        } else if (!native_equals(kc_json_member(root, "status"), "completed")) {
+            return KC_KAIMAN_EFORMAT;
+        }
+        for (index = 0U; status == KC_KAIMAN_OK &&
+            index < kc_json_length(items); index++) {
+            item = kc_json_item(items, index);
+            if (native_equals(kc_json_member(item, "type"), "reasoning")) continue;
+            if (!native_equals(kc_json_member(item, "type"), "message")) {
+                return KC_KAIMAN_EFORMAT;
+            }
+            status = native_blocks(kc_json_member(item, "content"), reply);
+        }
+    }
+    if (status != KC_KAIMAN_OK) return status;
+    if (reason != NULL) {
+        if (strcmp(reason, "max_tokens") == 0 ||
+            strcmp(reason, "max_output_tokens") == 0 ||
+            strcmp(reason, "MAX_TOKENS") == 0 || strcmp(reason, "length") == 0) {
+            *finish = "length";
+        } else if (strcmp(reason, "SAFETY") == 0 ||
+            strcmp(reason, "content_filter") == 0 ||
+            strcmp(reason, "guardrail_intervened") == 0 ||
+            strcmp(reason, "refusal") == 0) {
+            *finish = "content_filter";
+        } else if (strcmp(reason, "tool_use") == 0) {
+            return KC_KAIMAN_EFORMAT;
+        }
+    }
+    return KC_KAIMAN_OK;
+}
+
+/**
+ * Serialize a native text reply as a complete response or stream frame.
+ * @param reply Assistant text.
+ * @param model Client-visible model name.
+ * @param finish Finish reason, or NULL for a non-final chunk.
+ * @param chunk Whether to produce an SSE chunk.
+ * @return Owned JSON text, or NULL on failure.
+ */
+static char *native_completion(const char *reply, const char *model,
+    const char *finish, int chunk) {
+    kc_buffer_t *buffer = NULL;
+    char *result = NULL;
+    int status = kc_buffer_open(&buffer);
+
+    if (status != KC_KAIMAN_OK) return NULL;
+    status = kc_buffer_format(buffer,
+        "{\"id\":\"chatcmpl-kaiman\",\"object\":\"%s\",\"created\":%lld,\"model\":",
+        chunk ? "chat.completion.chunk" : "chat.completion",
+        (long long)time(NULL));
+    if (status == KC_KAIMAN_OK) status = json_write_text(buffer, model);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(buffer, ",\"choices\":[{\"index\":0,\"%s\":{",
+            chunk ? "delta" : "message");
+    }
+    if (status == KC_KAIMAN_OK && reply != NULL) {
+        status = kc_buffer_text(buffer, "\"role\":\"assistant\",\"content\":");
+        if (status == KC_KAIMAN_OK) status = json_write_text(buffer, reply);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(buffer, "},\"finish_reason\":");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = finish != NULL ? json_write_text(buffer, finish) :
+            kc_buffer_text(buffer, "null");
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}]}");
+    if (status == KC_KAIMAN_OK) {
+        result = kc_util_strdup(kc_buffer_value(buffer));
+    }
+    kc_buffer_close(buffer);
+    return result;
+}
+
+/**
+ * Forward a text chat through a native provider API.
+ * @param gateway Open gateway.
+ * @param peer Borrowed client peer.
+ * @param root Borrowed Chat Completions request.
+ * @param service Selected service.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int native_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
+    const kc_json_value_t *root, const kc_kaiman_service_t *service) {
+    const char *model = kc_json_text(kc_json_member(root, "model"));
+    const char *finish = NULL;
+    const char *type;
+    kc_upstream_field_t fields[2];
+    kc_upstream_request_t request;
+    kc_upstream_response_t response;
+    kc_kaiman_stream_t stream;
+    kc_json_value_t *value = NULL;
+    kc_buffer_t *reply = NULL;
+    char *authorization = NULL;
+    char *body = NULL;
+    char *url = NULL;
+    char *text = NULL;
+    char *final = NULL;
+    size_t count = 0U;
+    int streaming = kc_json_boolean(kc_json_member(root, "stream"));
+    int status;
+
+    if (model == NULL || *model == '\0') model = service->name;
+    memset(&response, 0, sizeof(response));
+    memset(&request, 0, sizeof(request));
+    memset(&stream, 0, sizeof(stream));
+    status = native_body(root, service, &body);
+    if (status != KC_KAIMAN_OK) {
+        status = gateway_failure(gateway, peer, 400,
+            "unsupported or invalid native text chat request");
+        goto done;
+    }
+    status = service_authorization(service, &authorization);
+    if (status != KC_KAIMAN_OK) {
+        status = gateway_failure(gateway, peer, 400,
+            "the service credential is unavailable");
+        goto done;
+    }
+    url = native_url(service);
+    if (url == NULL) {
+        status = gateway_failure(gateway, peer, 400, "invalid service URL");
+        goto done;
+    }
+    if (authorization != NULL) {
+        fields[count].name = "Authorization";
+        fields[count].value = authorization;
+        if (strncmp(authorization, "Bearer ", 7U) == 0) {
+            if (strcmp(service->adapter, "anthropic") == 0) {
+                fields[count].name = "x-api-key";
+                fields[count].value = authorization + 7U;
+            } else if (strcmp(service->adapter, "gemini") == 0) {
+                fields[count].name = "x-goog-api-key";
+                fields[count].value = authorization + 7U;
+            }
+        }
+        count++;
+    }
+    if (strcmp(service->adapter, "anthropic") == 0) {
+        fields[count].name = "anthropic-version";
+        fields[count++].value = "2023-06-01";
+    }
+    request.method = "POST";
+    request.url = url;
+    request.headers = fields;
+    request.header_count = count;
+    request.body = body;
+    request.body_size = strlen(body);
+    request.timeout = kc_kaiman_service_timeout(service);
+    status = kc_upstream_send(&request, &response);
+    if (status != KC_KAIMAN_OK) {
+        status = gateway_failure(gateway, peer, 502, kc_upstream_strerror(status));
+        goto done;
+    }
+    if (response.status >= 400) {
+        type = response.content_type != NULL && *response.content_type != '\0' ?
+            response.content_type : "application/json";
+        status = gateway_respond(gateway, peer, response.status, type,
+            response.body, response.body_size);
+        goto done;
+    }
+    status = kc_json_parse(response.body, response.body_size, &value);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&reply);
+    if (status == KC_KAIMAN_OK) {
+        status = native_reply(service->adapter, value, reply, &finish);
+    }
+    if (status != KC_KAIMAN_OK) {
+        status = gateway_failure(gateway, peer, 502, "invalid native response");
+        goto done;
+    }
+    text = native_completion(kc_buffer_value(reply), model,
+        streaming ? NULL : finish, streaming);
+    if (streaming) final = native_completion(NULL, model, finish, 1);
+    if (text == NULL || (streaming && final == NULL)) {
+        status = gateway_failure(gateway, peer, 500, "could not build a response");
+        goto done;
+    }
+    if (streaming) {
+        stream.peer = peer;
+        stream.gateway = gateway;
+        status = gateway_sse_data(gateway, &stream, text);
+        if (status == KC_KAIMAN_OK) {
+            status = gateway_sse_data(gateway, &stream, final);
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = gateway_sse_data(gateway, &stream, "[DONE]");
+        }
+        if (stream.headers_sent) {
+            (void)kc_netl_peer_send(peer, "0\r\n\r\n", 5U);
+            kc_netl_peer_close(peer);
+        }
+    } else {
+        status = gateway_json(gateway, peer, 200, text);
+    }
+
+done:
+    kc_kaiman_free(final);
+    kc_kaiman_free(text);
+    kc_buffer_close(reply);
+    kc_json_free(value);
+    kc_upstream_response_free(&response);
+    kc_kaiman_free(url);
+    kc_kaiman_free(body);
+    kc_kaiman_free(authorization);
+    return status;
+}
+
+/**
  * Forward one chat request to an OpenCode server using one persistent session.
  * @param gateway Open gateway.
  * @param peer Borrowed client peer.
@@ -2689,6 +3275,8 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
             }
             if (adapter != NULL && strcmp(adapter, "opencode") == 0) {
                 (void)opencode_chat(gateway, connection->peer, root);
+            } else if (adapter != NULL && strcmp(adapter, "openai") != 0) {
+                (void)native_chat(gateway, connection->peer, root, service);
             } else {
                 (void)openai_chat(gateway, connection->peer, root);
             }
