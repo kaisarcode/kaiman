@@ -314,7 +314,25 @@ static void test_mock_receive(kc_netl_peer_t *peer, const void *data,
     if (size >= sizeof(request)) size = sizeof(request) - 1U;
     memcpy(request, data, size);
     request[size] = '\0';
-    if (strstr(request, "/messages") != NULL) {
+    if (strstr(request, "GET /gemini/models") != NULL) {
+        payload = "{\"models\":[{\"name\":\"models/model-a\","
+            "\"supportedGenerationMethods\":[\"generateContent\"]}]}";
+        content_type = "application/json";
+    } else if (strstr(request, "GET /ollama/api/tags") != NULL) {
+        payload = "{\"models\":[{\"model\":\"model-a\"}]}";
+        content_type = "application/json";
+    } else if (strstr(request, "GET /bedrock/foundation-models") != NULL) {
+        payload = "{\"modelSummaries\":[{\"modelId\":\"model-a\","
+            "\"outputModalities\":[\"TEXT\"]}]}";
+        content_type = "application/json";
+    } else if (strstr(request, "GET /bedrock/inference-profiles") != NULL) {
+        payload = "{\"inferenceProfileSummaries\":["
+            "{\"inferenceProfileId\":\"profile-a\",\"status\":\"ACTIVE\"}]}";
+        content_type = "application/json";
+    } else if (strncmp(request, "GET ", 4U) == 0) {
+        payload = "{\"data\":[{\"id\":\"model-a\"},{\"id\":\"model-b\"}]}";
+        content_type = "application/json";
+    } else if (strstr(request, "/messages") != NULL) {
         payload = "{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"stop_reason\":\"end_turn\"}";
         content_type = "application/json";
     } else if (strstr(request, ":generateContent") != NULL) {
@@ -611,10 +629,10 @@ static int checks(const char *path) {
  */
 static int integration(const char *path) {
     static const char request_body[] =
-        "{\"model\":\"mock\",\"messages\":[{\"role\":\"user\","
+        "{\"model\":\"mock/model-a\",\"messages\":[{\"role\":\"user\","
         "\"content\":\"hi\"}]}";
     static const char stream_body[] =
-        "{\"model\":\"mock\",\"messages\":[{\"role\":\"user\","
+        "{\"model\":\"mock/model-a\",\"messages\":[{\"role\":\"user\","
         "\"content\":\"hi\"}],\"stream\":true}";
     static const char *const adapters[] = {"anthropic", "gemini",
         "responses", "ollama", "bedrock"};
@@ -645,8 +663,8 @@ static int integration(const char *path) {
     memset(&descriptor, 0, sizeof(descriptor));
     descriptor.name = "mock";
     descriptor.adapter = "openai";
-    descriptor.base_url = "http://127.0.0.1:49382";
-    descriptor.model = "mock/model";
+    descriptor.base_url = "http://127.0.0.1:49382/openai";
+    descriptor.model = NULL;
     descriptor.auth_scheme = "none";
     descriptor.timeout = 5;
     if (kc_kaiman_add_service(kaiman, &descriptor, &service) !=
@@ -657,9 +675,14 @@ static int integration(const char *path) {
         goto done;
     }
     for (index = 0U; index < sizeof(adapters) / sizeof(adapters[0]); index++) {
+        char base[128];
+
+        (void)snprintf(base, sizeof(base), "http://127.0.0.1:49382/%s",
+            adapters[index]);
         descriptor.name = adapters[index];
         descriptor.adapter = adapters[index];
-        descriptor.model = "native-model";
+        descriptor.base_url = base;
+        descriptor.model = NULL;
         if (kc_kaiman_add_service(kaiman, &descriptor, &service) != KC_KAIMAN_OK) {
             fprintf(stderr, "native adapter setup failed: %s\n", adapters[index]);
             goto done;
@@ -702,15 +725,21 @@ static int integration(const char *path) {
     }
     free(response);
     response = test_request("GET", "/v1/models", NULL, &size);
-    if (response == NULL || strstr(response, "\"id\":\"mock\"") == NULL ||
-        strstr(response, "\"model\":\"mock/model\"") == NULL) {
+    if (response == NULL || strstr(response, "\"id\":\"mock/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"mock/model-b\"") == NULL ||
+        strstr(response, "\"id\":\"anthropic/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"gemini/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"responses/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"ollama/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"bedrock/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"bedrock/profile-a\"") == NULL) {
         fprintf(stderr, "models endpoint failed\n");
         result = 1;
     }
     free(response);
     response = test_request("POST", "/v1/chat/completions", request_body,
         &size);
-    if (response == NULL || strstr(response, "\"model\":\"mock\"") == NULL ||
+    if (response == NULL || strstr(response, "\"model\":\"mock/model-a\"") == NULL ||
         strstr(response, "\"content\":\"hello\"") == NULL) {
         fprintf(stderr, "chat completion failed\n");
         result = 1;
@@ -720,9 +749,25 @@ static int integration(const char *path) {
         &size);
     if (response == NULL ||
         strstr(response, "text/event-stream") == NULL ||
-        strstr(response, "\"model\":\"mock\"") == NULL ||
+        strstr(response, "\"model\":\"mock/model-a\"") == NULL ||
         strstr(response, "data: [DONE]") == NULL) {
         fprintf(stderr, "streaming chat completion failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/chat/completions",
+        "{\"model\":\"mock/model-b\",\"messages\":[{\"role\":\"user\","
+        "\"content\":\"hi\"}]}", &size);
+    if (response == NULL || strstr(response, "\"model\":\"mock/model-b\"") == NULL) {
+        fprintf(stderr, "second provider model failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/chat/completions",
+        "{\"model\":\"unknown/model-a\",\"messages\":[{\"role\":\"user\","
+        "\"content\":\"hi\"}]}", &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 404") == NULL) {
+        fprintf(stderr, "unknown service routing failed\n");
         result = 1;
     }
     free(response);
@@ -732,7 +777,7 @@ static int integration(const char *path) {
 
         for (streaming = 0; streaming <= 1; streaming++) {
             (void)snprintf(body, sizeof(body),
-                "{\"model\":\"%s\",\"messages\":[{\"role\":\"system\","
+                "{\"model\":\"%s/model-a\",\"messages\":[{\"role\":\"system\","
                 "\"content\":\"test\"},{\"role\":\"user\",\"content\":\"hi\"}],"
                 "\"stream\":%s}", adapters[index], streaming ? "true" : "false");
             response = test_request("POST", "/v1/chat/completions", body, &size);
@@ -1036,7 +1081,7 @@ static int cli_commands(void) {
     }
     {
         char *arguments[] = { TEST_CLI, "list", NULL };
-        if (!test_cli_check(arguments, 0, "demo/model", NULL)) {
+        if (!test_cli_check(arguments, 0, "demo", NULL)) {
             fprintf(stderr, "CLI list failed\n");
             goto done;
         }

@@ -39,7 +39,7 @@ static void usage(void) {
     printf("\nOptions:\n");
     printf("  -h, --help                      Show this help\n");
     printf("  -v, --version                   Show version\n\n");
-    printf("Service keys: adapter, url, model, env, token-command,\n");
+    printf("Service keys: adapter, url, env, token-command,\n");
     printf("  scheme, user, timeout\n");
 }
 
@@ -65,7 +65,6 @@ static void print_service(const kc_kaiman_service_t *service) {
     printf("%s\n", kc_kaiman_service_get(service, "name"));
     printf("  adapter: %s\n", kc_kaiman_service_get(service, "adapter"));
     printf("  url: %s\n", kc_kaiman_service_get(service, "url"));
-    printf("  model: %s\n", kc_kaiman_service_get(service, "model"));
     printf("  env: %s\n", kc_kaiman_service_get(service, "env"));
     printf("  token-command: %s\n",
         kc_kaiman_service_get(service, "token-command"));

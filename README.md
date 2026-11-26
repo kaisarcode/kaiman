@@ -33,7 +33,7 @@ Every mutation persists immediately. Status codes follow the kclib convention:
 borrowed. A removed service handle stays allocated but becomes invalid.
 
 A service descriptor accepts a unique `name`, an `adapter` (see the adapter
-list below), an `http://` or `https://` URL, an upstream `model`, an optional
+list below), an `http://` or `https://` URL, an optional
 credential reference (`env` or `token-command`), an `auth` scheme (`none`,
 `bearer` or `basic`), an optional `user`, and a `timeout` from 1 to 600
 seconds. Direct credentials are stored separately in the system credential store
@@ -52,18 +52,16 @@ var myserv1 = services[0];
 var myserv2 = kmn.getService("local-opencode");
 
 myserv1.set("name", "myserv1");
-myserv1.set("model", "opencode/big-pickle");
 
 const myserv3 = kmn.addService({
   name: "openai",
   adapter: "openai",
   url: "https://api.openai.com/v1",
-  apiKeyEnv: "OPENAI_API_KEY",
-  model: "gpt-5"
+  apiKeyEnv: "OPENAI_API_KEY"
 });
 
 kmn.listen("127.0.0.1:10000");
-myserv3.get("model");
+myserv3.get("url");
 myserv1.remove();
 kmn.close();
 ```
@@ -80,10 +78,10 @@ kaiman -v
 kaiman --version
 
 kaiman add local-opencode adapter=opencode \
-  url=http://127.0.0.1:49374 model=opencode/big-pickle \
+  url=http://127.0.0.1:49374 \
   scheme=basic user=opencode token-command="opencode service get password"
 kaiman list
-kaiman edit local-opencode model=opencode/big-pickle
+kaiman edit local-opencode timeout=120
 kaiman remove local-opencode
 
 kaiman start
@@ -92,7 +90,7 @@ kaiman stop
 kaiman gui
 ```
 
-`add` and `edit` accept the service keys `adapter`, `url`, `model`, `env`,
+`add` and `edit` accept the service keys `adapter`, `url`, `env`,
 `token-command`, `scheme`, `user` and `timeout`. `start` launches the gateway
 as a detached process, `status` prints its state and address, and `stop`
 terminates it. `gui` opens a native WebView manager backed by the same public
@@ -137,11 +135,25 @@ The gateway listens on `127.0.0.1:49380` by default. Change `listen` in the
 | Method | Path | Behavior |
 | --- | --- | --- |
 | `GET` | `/health` | Returns `{"status":"ok"}`. |
-| `GET` | `/v1/models` | Lists configured services as OpenAI-compatible models. |
+| `GET` | `/v1/models` | Discovers models from configured providers. |
 | `POST` | `/v1/chat/completions` | Selects a service by `model` and forwards the chat request. |
 
-A chat request needs an object body with a `model` that matches a configured
-service name and a `messages` array. Other JSON fields are passed through.
+A chat request uses a model identifier returned by the model catalog and a
+`messages` array. Each identifier has the form `service/model`. Model selection
+happens per request, and the gateway removes the service prefix before sending
+the request upstream. Multiple services can expose the same upstream model.
+
+```sh
+curl http://127.0.0.1:49380/v1/models
+```
+
+The catalog is refreshed from providers on each request. Unreachable providers
+are omitted when other catalogs succeed; if every configured provider fails,
+the gateway returns 502. A provider catalog does not guarantee that every
+listed model supports chat or that account permissions allow inference.
+Legacy `model=` settings remain readable for compatibility and are ignored by
+the gateway.
+
 `stream:true` returns a chunked SSE response with `data:` frames and a final
 `data: [DONE]` frame.
 
@@ -153,10 +165,11 @@ status `400` or higher are propagated with their status, content type and body.
 Supported adapters:
 
 - `openai` forwards chat requests to an OpenAI-compatible `/chat/completions`
-    endpoint, replacing the request `model` with the configured upstream model
-    and rewriting response models back to the requested name.
-- `opencode` uses the local OpenCode API. Its model must be
-    `providerID/modelID`. It reuses one persisted session per upstream server,
+    endpoint, removing the service prefix from the requested model and
+    restoring the full identifier in responses. Model discovery uses `/models`.
+- `opencode` uses the local OpenCode API. Its model identifier is
+    `service/providerID/modelID`. Discovery queries the provider catalog.
+    It reuses one persisted session per upstream server,
     keeps a bounded conversation history, and serializes requests that share
     that session. `stream:true` emits the completed reply as SSE chunks.
 - `anthropic` uses the Messages API (`/messages`). Set the base URL to the API
@@ -166,7 +179,9 @@ Supported adapters:
 - `responses` uses `/responses` with a bearer credential.
 - `ollama` uses `/api/chat` from the server root, normally without authentication.
 - `bedrock` uses `/model/{modelId}/converse` from the regional runtime root
-    with an Amazon Bedrock bearer API key. AWS SigV4 is not supported.
+    with an Amazon Bedrock bearer API key. Discovery queries the control-plane
+    foundation model and inference profile catalogs. The credential must allow
+    those operations. AWS SigV4 is not supported.
 
 The five native text adapters accept system, user and assistant text messages,
 maximum output tokens, temperature and top-p. Streaming requests emit the
@@ -194,7 +209,6 @@ listen=127.0.0.1:49380
 [service.local-opencode]
 adapter=opencode
 url=http://127.0.0.1:49374
-model=opencode/big-pickle
 env=
 token-command=opencode service get password
 scheme=basic

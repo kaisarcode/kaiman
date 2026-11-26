@@ -112,8 +112,7 @@ function renderServices(services) {
         name.textContent = services[index].name;
         detail = document.createElement("span");
         detail.className = "service-detail";
-        detail.textContent = (services[index].adapter || "no adapter") +
-            " / " + (services[index].model || "no model");
+        detail.textContent = services[index].adapter || "no provider";
         item = document.createElement("button");
         item.type = "button";
         item.className = "service-item";
@@ -177,7 +176,7 @@ function clearForm() {
  * @return void
  */
 function fillForm(service) {
-    var fields = ["adapter", "url", "model", "scheme", "user"];
+    var fields = ["adapter", "url", "scheme", "user"];
     var items = document.querySelectorAll(".service-item");
     var index;
 
@@ -226,7 +225,6 @@ function readForm() {
     if (byId("field-url").value !== "") {
         params.url = byId("field-url").value;
     }
-    params.model = byId("field-model").value;
     params.secret = byId("field-secret").disabled ||
         byId("field-secret").value === "" ? null : byId("field-secret").value;
     params.user = byId("field-user").disabled ? "" :

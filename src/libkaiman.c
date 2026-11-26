@@ -1713,31 +1713,39 @@ static int gateway_sse_chunk(const void *data, size_t size, void *userdata) {
 }
 
 /**
- * Select one configured service for a client model.
+ * Resolve a namespaced model to its service and upstream identifier.
  * @param kaiman Open manager.
- * @param requested Requested model, or NULL.
- * @param out Receives borrowed service.
+ * @param requested Client model identifier in service/model form.
+ * @param out Receives a borrowed service.
+ * @param model Receives the borrowed upstream model identifier.
  * @return KC_KAIMAN_OK, KC_KAIMAN_NOT_FOUND, or an error status.
  */
 static int gateway_select(kc_kaiman_t *kaiman, const char *requested,
-    kc_kaiman_service_t **out) {
+    kc_kaiman_service_t **out, const char **model) {
+    const char *slash;
+    size_t length;
     size_t index;
 
-    if (kaiman == NULL || out == NULL) return KC_KAIMAN_EINVAL;
-    if (requested != NULL && *requested != '\0') {
-        for (index = 0U; index < kaiman->count; index++) {
-            kc_kaiman_service_t *service = kaiman->services[index];
-            if (strcmp(service->name, requested) == 0 ||
-                (service->model != NULL &&
-                    strcmp(service->model, requested) == 0)) {
-                *out = service;
-                return KC_KAIMAN_OK;
-            }
-        }
+    if (kaiman == NULL || out == NULL || model == NULL) {
+        return KC_KAIMAN_EINVAL;
     }
-    if (kaiman->count == 1U) {
-        *out = kaiman->services[0U];
-        return KC_KAIMAN_OK;
+    *out = NULL;
+    *model = NULL;
+    if (requested == NULL) return KC_KAIMAN_NOT_FOUND;
+    slash = strchr(requested, '/');
+    if (slash == NULL || slash == requested || slash[1] == '\0') {
+        return KC_KAIMAN_NOT_FOUND;
+    }
+    length = (size_t)(slash - requested);
+    for (index = 0U; index < kaiman->count; index++) {
+        kc_kaiman_service_t *service = kaiman->services[index];
+
+        if (strlen(service->name) == length &&
+            strncmp(service->name, requested, length) == 0) {
+            *out = service;
+            *model = slash + 1;
+            return KC_KAIMAN_OK;
+        }
     }
     return KC_KAIMAN_NOT_FOUND;
 }
@@ -1826,12 +1834,14 @@ static int request_prompt(const kc_json_value_t *root, char **out) {
  * @param gateway Open gateway.
  * @param peer Borrowed client peer.
  * @param root Borrowed chat request object.
+ * @param service Selected service.
+ * @param model Upstream model identifier.
  * @return KC_KAIMAN_OK or an error status.
  */
 static int openai_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
-    const kc_json_value_t *root) {
+    const kc_json_value_t *root, const kc_kaiman_service_t *service,
+    const char *model) {
     const char *requested = kc_json_text(kc_json_member(root, "model"));
-    kc_kaiman_service_t *service = NULL;
     kc_upstream_field_t fields[1];
     kc_upstream_request_t request;
     kc_upstream_response_t response;
@@ -1846,18 +1856,13 @@ static int openai_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     int status;
     int rc;
 
-    status = gateway_select(gateway->manager, requested, &service);
-    if (status != KC_KAIMAN_OK) {
-        return gateway_failure(gateway, peer, 404,
-            "no configured service matches the requested model");
-    }
     stream_mode = kc_json_boolean(kc_json_member(root, "stream"));
     status = service_authorization(service, &authorization);
     if (status != KC_KAIMAN_OK) {
         return gateway_failure(gateway, peer, 400,
             "the service credential is unavailable");
     }
-    status = json_rewrite(root, service->model, NULL, stream_mode, &body);
+    status = json_rewrite(root, model, NULL, stream_mode, &body);
     if (status != KC_KAIMAN_OK) {
         free(authorization);
         return gateway_failure(gateway, peer, 400, "invalid chat request");
@@ -2099,7 +2104,7 @@ static int opencode_state_save(const char *path, const char *session,
 
 /**
  * Split an OpenCode model into provider and model identifiers.
- * @param model Configured model.
+ * @param model Requested upstream model.
  * @param provider Receives owned provider identifier.
  * @param identifier Receives owned model identifier.
  * @return KC_KAIMAN_OK or an error status.
@@ -2202,11 +2207,12 @@ static char *opencode_session_id(const kc_upstream_response_t *response) {
  * Ensure one persistent OpenCode session exists for a service.
  * @param service Managed service.
  * @param state_path Persistent state path.
+ * @param model Upstream model identifier.
  * @param session Receives owned session identifier.
  * @return KC_KAIMAN_OK or an error status.
  */
 static int opencode_ensure_session(const kc_kaiman_service_t *service,
-    const char *state_path, char **session) {
+    const char *state_path, const char *model, char **session) {
     kc_kaiman_message_t messages[KAIMAN_MAX_HISTORY];
     kc_upstream_response_t response;
     kc_buffer_t *buffer = NULL;
@@ -2249,7 +2255,7 @@ static int opencode_ensure_session(const kc_kaiman_service_t *service,
     }
     if (*session != NULL) goto done;
 
-    status = opencode_split_model(service->model, &provider, &identifier);
+    status = opencode_split_model(model, &provider, &identifier);
     if (status != KC_KAIMAN_OK) goto done;
     status = kc_buffer_open(&buffer);
     if (status != KC_KAIMAN_OK) goto done;
@@ -2579,11 +2585,12 @@ static int native_messages(const kc_json_value_t *root, const char *adapter,
  * Build a native text request from the common chat contract.
  * @param root Borrowed Chat Completions request.
  * @param service Selected service.
+ * @param model Upstream model identifier.
  * @param body Receives owned native JSON.
  * @return KC_KAIMAN_OK or an error status.
  */
 static int native_body(const kc_json_value_t *root,
-    const kc_kaiman_service_t *service, char **body) {
+    const kc_kaiman_service_t *service, const char *model, char **body) {
     const char *adapter = service->adapter;
     const kc_json_value_t *max = kc_json_member(root, "max_completion_tokens");
     const kc_json_value_t *stop = kc_json_member(root, "stop");
@@ -2610,7 +2617,7 @@ static int native_body(const kc_json_value_t *root,
         (max != NULL && (kc_json_type(max) != KC_JSON_NUMBER ||
             kc_json_number(max) < 1.0 || kc_json_number(max) > INT_MAX)) ||
         (responses && stop != NULL)) return KC_KAIMAN_EINVAL;
-    if (service->model == NULL || *service->model == '\0') {
+    if (model == NULL || *model == '\0') {
         return KC_KAIMAN_EINVAL;
     }
     status = kc_buffer_open(&messages);
@@ -2623,7 +2630,7 @@ static int native_body(const kc_json_value_t *root,
     if (status == KC_KAIMAN_OK && !gemini && !bedrock) {
         status = kc_buffer_text(buffer, "\"model\":");
         if (status == KC_KAIMAN_OK) {
-            status = json_write_text(buffer, service->model);
+            status = json_write_text(buffer, model);
         }
         if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, ",");
     }
@@ -2701,12 +2708,12 @@ static int native_body(const kc_json_value_t *root,
 /**
  * Resolve the native API URL using an encoded model path segment.
  * @param service Selected service.
+ * @param model Upstream model identifier.
  * @return Owned URL, or NULL on failure.
  */
-static char *native_url(const kc_kaiman_service_t *service) {
+static char *native_url(const kc_kaiman_service_t *service, const char *model) {
     const char *adapter = service->adapter;
     const unsigned char *cursor;
-    const char *model = service->model;
     kc_buffer_t *path = NULL;
     char *url = NULL;
     int gemini = strcmp(adapter, "gemini") == 0;
@@ -2897,15 +2904,49 @@ static char *native_completion(const char *reply, const char *model,
 }
 
 /**
+ * Build provider-specific authentication headers.
+ * @param service Managed service.
+ * @param authorization Borrowed authorization header, or NULL.
+ * @param fields Destination array with room for two headers.
+ * @return Number of headers.
+ */
+static size_t provider_headers(const kc_kaiman_service_t *service,
+    const char *authorization, kc_upstream_field_t *fields) {
+    size_t count = 0U;
+
+    if (authorization != NULL) {
+        fields[count].name = "Authorization";
+        fields[count].value = authorization;
+        if (strncmp(authorization, "Bearer ", 7U) == 0) {
+            if (strcmp(service->adapter, "anthropic") == 0) {
+                fields[count].name = "x-api-key";
+                fields[count].value = authorization + 7U;
+            } else if (strcmp(service->adapter, "gemini") == 0) {
+                fields[count].name = "x-goog-api-key";
+                fields[count].value = authorization + 7U;
+            }
+        }
+        count++;
+    }
+    if (strcmp(service->adapter, "anthropic") == 0) {
+        fields[count].name = "anthropic-version";
+        fields[count++].value = "2023-06-01";
+    }
+    return count;
+}
+
+/**
  * Forward a text chat through a native provider API.
  * @param gateway Open gateway.
  * @param peer Borrowed client peer.
  * @param root Borrowed Chat Completions request.
  * @param service Selected service.
+ * @param upstream_model Upstream model identifier.
  * @return KC_KAIMAN_OK or an error status.
  */
 static int native_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
-    const kc_json_value_t *root, const kc_kaiman_service_t *service) {
+    const kc_json_value_t *root, const kc_kaiman_service_t *service,
+    const char *upstream_model) {
     const char *model = kc_json_text(kc_json_member(root, "model"));
     const char *finish = NULL;
     const char *type;
@@ -2928,7 +2969,7 @@ static int native_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     memset(&response, 0, sizeof(response));
     memset(&request, 0, sizeof(request));
     memset(&stream, 0, sizeof(stream));
-    status = native_body(root, service, &body);
+    status = native_body(root, service, upstream_model, &body);
     if (status != KC_KAIMAN_OK) {
         status = gateway_failure(gateway, peer, 400,
             "unsupported or invalid native text chat request");
@@ -2940,29 +2981,12 @@ static int native_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
             "the service credential is unavailable");
         goto done;
     }
-    url = native_url(service);
+    url = native_url(service, upstream_model);
     if (url == NULL) {
         status = gateway_failure(gateway, peer, 400, "invalid service URL");
         goto done;
     }
-    if (authorization != NULL) {
-        fields[count].name = "Authorization";
-        fields[count].value = authorization;
-        if (strncmp(authorization, "Bearer ", 7U) == 0) {
-            if (strcmp(service->adapter, "anthropic") == 0) {
-                fields[count].name = "x-api-key";
-                fields[count].value = authorization + 7U;
-            } else if (strcmp(service->adapter, "gemini") == 0) {
-                fields[count].name = "x-goog-api-key";
-                fields[count].value = authorization + 7U;
-            }
-        }
-        count++;
-    }
-    if (strcmp(service->adapter, "anthropic") == 0) {
-        fields[count].name = "anthropic-version";
-        fields[count++].value = "2023-06-01";
-    }
+    count = provider_headers(service, authorization, fields);
     request.method = "POST";
     request.url = url;
     request.headers = fields;
@@ -3033,12 +3057,14 @@ done:
  * @param gateway Open gateway.
  * @param peer Borrowed client peer.
  * @param root Borrowed chat request object.
+ * @param service Selected service.
+ * @param model Upstream provider/model identifier.
  * @return KC_KAIMAN_OK or an error status.
  */
 static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
-    const kc_json_value_t *root) {
+    const kc_json_value_t *root, const kc_kaiman_service_t *service,
+    const char *model) {
     const char *requested = kc_json_text(kc_json_member(root, "model"));
-    kc_kaiman_service_t *service = NULL;
     kc_upstream_response_t response;
     kc_kaiman_message_t messages[KAIMAN_MAX_HISTORY];
     kc_kaiman_stream_t stream;
@@ -3062,12 +3088,7 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     int status;
     int rc;
 
-    status = gateway_select(gateway->manager, requested, &service);
-    if (status != KC_KAIMAN_OK) {
-        return gateway_failure(gateway, peer, 404,
-            "no configured service matches the requested model");
-    }
-    if (service->model == NULL || strchr(service->model, '/') == NULL) {
+    if (model == NULL || strchr(model, '/') == NULL) {
         return gateway_failure(gateway, peer, 400,
             "opencode model must be providerID/modelID");
     }
@@ -3075,10 +3096,11 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     memset(messages, 0, sizeof(messages));
     memset(&stream, 0, sizeof(stream));
     kc_mutex_lock(&gateway->mutex);
+    status = KC_KAIMAN_OK;
     state_path = opencode_session_path(service);
     if (state_path == NULL) status = KC_KAIMAN_ENOMEM;
     if (status == KC_KAIMAN_OK) {
-        status = opencode_ensure_session(service, state_path, &session);
+        status = opencode_ensure_session(service, state_path, model, &session);
     }
     if (status == KC_KAIMAN_OK) {
         status = request_prompt(root, &text);
@@ -3127,7 +3149,7 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
         status = kc_buffer_open(&stream.sse);
     }
     if (status == KC_KAIMAN_OK) {
-        status = opencode_split_model(service->model, &provider, &identifier);
+        status = opencode_split_model(model, &provider, &identifier);
     }
     if (status == KC_KAIMAN_OK) {
         kc_buffer_t *buffer = NULL;
@@ -3299,48 +3321,443 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
 }
 
 /**
- * Build the OpenAI-compatible model list from saved services.
- * @param kaiman Open manager.
- * @return Owned JSON text, or NULL on failure.
+ * Append one discovered model using a collision-free service namespace.
+ * @param buffer Destination list.
+ * @param service Source service.
+ * @param provider Nested provider identifier, or NULL.
+ * @param model Upstream model identifier.
+ * @param count Number of models already written, updated on success.
+ * @return KC_KAIMAN_OK or an error status.
  */
-static char *gateway_models(const kc_kaiman_t *kaiman) {
-    kc_buffer_t *buffer = NULL;
-    char *result = NULL;
-    size_t index;
+static int catalog_append(kc_buffer_t *buffer,
+    const kc_kaiman_service_t *service, const char *provider,
+    const char *model, size_t *count) {
+    kc_buffer_t *id = NULL;
     int status;
 
-    if (kaiman == NULL) return NULL;
-    status = kc_buffer_open(&buffer);
-    if (status != KC_KAIMAN_OK) return NULL;
-    status = kc_buffer_text(buffer,
-        "{\"object\":\"list\",\"data\":[");
-    for (index = 0U; status == KC_KAIMAN_OK && index < kaiman->count;
-        index++) {
-        const kc_kaiman_service_t *service = kaiman->services[index];
-        if (index != 0U) status = kc_buffer_text(buffer, ",");
-        if (status != KC_KAIMAN_OK) break;
-        status = kc_buffer_text(buffer, "{\"id\":");
-        if (status != KC_KAIMAN_OK) break;
-        status = json_write_text(buffer, service->name);
-        if (status != KC_KAIMAN_OK) break;
+    if (model == NULL || *model == '\0') return KC_KAIMAN_EFORMAT;
+    status = kc_buffer_open(&id);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(id, "%s/", service->name);
+    }
+    if (status == KC_KAIMAN_OK && provider != NULL) {
+        status = kc_buffer_format(id, "%s/", provider);
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(id, model);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(buffer, *count == 0U ? "{\"id\":" : ",{\"id\":");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = json_write_text(buffer, kc_buffer_value(id));
+    }
+    if (status == KC_KAIMAN_OK) {
         status = kc_buffer_text(buffer,
             ",\"object\":\"model\",\"created\":0,\"owned_by\":");
-        if (status != KC_KAIMAN_OK) break;
-        status = json_write_text(buffer, service->adapter != NULL
-            ? service->adapter : "kaiman");
-        if (status != KC_KAIMAN_OK) break;
-        status = kc_buffer_text(buffer, ",\"model\":");
-        if (status != KC_KAIMAN_OK) break;
-        status = json_write_text(buffer, service->model != NULL
-            ? service->model : "");
-        if (status != KC_KAIMAN_OK) break;
-        status = kc_buffer_text(buffer, "}");
     }
-    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "]}");
-    if (status == KC_KAIMAN_OK) result = kc_util_strdup(
-        kc_buffer_value(buffer));
+    if (status == KC_KAIMAN_OK) {
+        status = json_write_text(buffer, service->name);
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}");
+    if (status == KC_KAIMAN_OK) (*count)++;
+    kc_buffer_close(id);
+    return status;
+}
+
+/**
+ * Check whether a JSON string array contains a value.
+ * @param array Borrowed array.
+ * @param text Expected value.
+ * @return 1 on match, otherwise 0.
+ */
+static int catalog_contains(const kc_json_value_t *array, const char *text) {
+    size_t index;
+
+    if (kc_json_type(array) != KC_JSON_ARRAY) return 0;
+    for (index = 0U; index < kc_json_length(array); index++) {
+        if (native_equals(kc_json_item(array, index), text)) return 1;
+    }
+    return 0;
+}
+
+/**
+ * Decode connected OpenCode providers and their model identifiers.
+ * @param root Borrowed provider catalog.
+ * @param service Source service.
+ * @param buffer Destination list.
+ * @param count Number of models already written.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int catalog_opencode(const kc_json_value_t *root,
+    const kc_kaiman_service_t *service, kc_buffer_t *buffer, size_t *count) {
+    const kc_json_value_t *providers = kc_json_member(root, "all");
+    const kc_json_value_t *connected = kc_json_member(root, "connected");
+    size_t index;
+    int status = KC_KAIMAN_OK;
+
+    if (providers == NULL) providers = kc_json_member(root, "providers");
+    if (kc_json_type(providers) != KC_JSON_ARRAY) return KC_KAIMAN_EFORMAT;
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < kc_json_length(providers); index++) {
+        const kc_json_value_t *item = kc_json_item(providers, index);
+        const kc_json_value_t *models = kc_json_member(item, "models");
+        const char *provider = kc_json_text(kc_json_member(item, "id"));
+        size_t model_index;
+
+        if (provider == NULL || *provider == '\0') return KC_KAIMAN_EFORMAT;
+        if (connected != NULL && !catalog_contains(connected, provider)) continue;
+        if (kc_json_type(models) != KC_JSON_OBJECT) return KC_KAIMAN_EFORMAT;
+        for (model_index = 0U; status == KC_KAIMAN_OK &&
+            model_index < kc_json_length(models); model_index++) {
+            status = catalog_append(buffer, service, provider,
+                kc_json_key(models, model_index), count);
+        }
+    }
+    return status;
+}
+
+/**
+ * Decode one page of a provider model catalog.
+ * @param root Borrowed response object.
+ * @param service Source service.
+ * @param profiles Whether this is a Bedrock inference profile page.
+ * @param buffer Destination list.
+ * @param count Number of models already written.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int catalog_page(const kc_json_value_t *root,
+    const kc_kaiman_service_t *service, int profiles,
+    kc_buffer_t *buffer, size_t *count) {
+    const char *adapter = service->adapter;
+    const char *array = "data";
+    const char *key = "id";
+    const kc_json_value_t *items;
+    size_t index;
+    int gemini = strcmp(adapter, "gemini") == 0;
+    int bedrock = strcmp(adapter, "bedrock") == 0;
+    int status = KC_KAIMAN_OK;
+
+    if (strcmp(adapter, "opencode") == 0) {
+        const kc_json_value_t *data = kc_json_member(root, "data");
+
+        return catalog_opencode(data != NULL ? data : root, service,
+            buffer, count);
+    }
+    if (gemini || strcmp(adapter, "ollama") == 0) {
+        array = "models";
+        key = gemini ? "name" : "model";
+    } else if (bedrock) {
+        array = profiles ? "inferenceProfileSummaries" : "modelSummaries";
+        key = profiles ? "inferenceProfileId" : "modelId";
+    }
+    items = kc_json_member(root, array);
+    if (kc_json_type(items) != KC_JSON_ARRAY) return KC_KAIMAN_EFORMAT;
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < kc_json_length(items); index++) {
+        const kc_json_value_t *item = kc_json_item(items, index);
+        const char *model = kc_json_text(kc_json_member(item, key));
+
+        if (gemini) {
+            if (!catalog_contains(kc_json_member(item,
+                "supportedGenerationMethods"), "generateContent")) continue;
+            if (model != NULL && strncmp(model, "models/", 7U) == 0) model += 7U;
+        }
+        if (bedrock && !profiles &&
+            !catalog_contains(kc_json_member(item, "outputModalities"), "TEXT")) {
+            continue;
+        }
+        if (bedrock && profiles &&
+            !native_equals(kc_json_member(item, "status"), "ACTIVE")) continue;
+        if (strcmp(adapter, "ollama") == 0 && model == NULL) {
+            model = kc_json_text(kc_json_member(item, "name"));
+        }
+        status = catalog_append(buffer, service, NULL, model, count);
+    }
+    return status;
+}
+
+/**
+ * Resolve the Bedrock control-plane base URL from a runtime URL.
+ * @param base Configured runtime or proxy base URL.
+ * @return Owned control-plane URL, or NULL on failure.
+ */
+static char *catalog_bedrock_base(const char *base) {
+    static const char prefix[] = "https://bedrock-runtime.";
+    const char *region;
+    const char *suffix;
+    kc_buffer_t *buffer = NULL;
+    char *result = NULL;
+    int status;
+
+    if (strncmp(base, prefix, sizeof(prefix) - 1U) != 0) {
+        return kc_util_strdup(base);
+    }
+    region = base + sizeof(prefix) - 1U;
+    suffix = strchr(region, '.');
+    if (suffix == NULL ||
+        (strcmp(suffix, ".amazonaws.com") != 0 &&
+            strcmp(suffix, ".amazonaws.com/") != 0 &&
+            strcmp(suffix, ".amazonaws.com.cn") != 0 &&
+            strcmp(suffix, ".amazonaws.com.cn/") != 0) ||
+        strspn(region, "abcdefghijklmnopqrstuvwxyz0123456789-") !=
+            (size_t)(suffix - region)) {
+        return kc_util_strdup(base);
+    }
+    status = kc_buffer_open(&buffer);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(buffer, "https://bedrock.%s", region);
+    }
+    if (status == KC_KAIMAN_OK) result = kc_util_strdup(kc_buffer_value(buffer));
     kc_buffer_close(buffer);
     return result;
+}
+
+/**
+ * Append a percent-encoded pagination cursor.
+ * @param buffer Destination URL.
+ * @param cursor Provider cursor.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int catalog_cursor(kc_buffer_t *buffer, const char *cursor) {
+    const unsigned char *byte = (const unsigned char *)cursor;
+    int status = KC_KAIMAN_OK;
+
+    for (; *byte != '\0' && status == KC_KAIMAN_OK; byte++) {
+        if ((*byte >= 'a' && *byte <= 'z') ||
+            (*byte >= 'A' && *byte <= 'Z') ||
+            (*byte >= '0' && *byte <= '9') ||
+            *byte == '-' || *byte == '_' || *byte == '.' || *byte == '~') {
+            status = kc_buffer_append(buffer, byte, 1U);
+        } else {
+            status = kc_buffer_format(buffer, "%%%02X", (unsigned int)*byte);
+        }
+    }
+    return status;
+}
+
+/**
+ * Fetch and parse a catalog endpoint using the service credentials.
+ * @param service Source service.
+ * @param base Catalog base URL.
+ * @param path Endpoint path.
+ * @param query Pagination parameter name, or NULL.
+ * @param cursor Pagination cursor, or NULL.
+ * @param authorization Borrowed authorization header, or NULL.
+ * @param out Receives the owned catalog response.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int catalog_request(const kc_kaiman_service_t *service,
+    const char *base, const char *path, const char *query, const char *cursor,
+    const char *authorization, kc_json_value_t **out) {
+    kc_upstream_request_t request;
+    kc_upstream_response_t response;
+    kc_upstream_field_t fields[2];
+    kc_buffer_t *url = NULL;
+    char *endpoint = api_url(base, path);
+    int status;
+
+    *out = NULL;
+    if (endpoint == NULL) return KC_KAIMAN_ENOMEM;
+    memset(&request, 0, sizeof(request));
+    memset(&response, 0, sizeof(response));
+    status = kc_buffer_open(&url);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(url, endpoint);
+    if (status == KC_KAIMAN_OK && query != NULL && cursor != NULL) {
+        status = kc_buffer_format(url, "%c%s=",
+            strchr(endpoint, '?') == NULL ? '?' : '&', query);
+        if (status == KC_KAIMAN_OK) status = catalog_cursor(url, cursor);
+    }
+    if (status == KC_KAIMAN_OK) {
+        request.method = "GET";
+        request.url = kc_buffer_value(url);
+        request.headers = fields;
+        request.header_count = provider_headers(service, authorization, fields);
+        request.timeout = kc_kaiman_service_timeout(service);
+        status = kc_upstream_send(&request, &response);
+    }
+    if (status == KC_KAIMAN_OK && response.status != 200) {
+        status = KC_KAIMAN_EHTTP;
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_json_parse(response.body, response.body_size, out);
+    }
+    kc_upstream_response_free(&response);
+    kc_buffer_close(url);
+    kc_kaiman_free(endpoint);
+    return status;
+}
+
+/**
+ * Fetch all pages of a provider catalog endpoint.
+ * @param service Source service.
+ * @param base Catalog base URL.
+ * @param path Endpoint path.
+ * @param profiles Whether this lists Bedrock inference profiles.
+ * @param authorization Borrowed authorization header, or NULL.
+ * @param buffer Destination list.
+ * @param count Number of models already written.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int catalog_fetch(const kc_kaiman_service_t *service,
+    const char *base, const char *path, int profiles, const char *authorization,
+    kc_buffer_t *buffer, size_t *count) {
+    const char *query = NULL;
+    const char *next = NULL;
+    char *cursor = NULL;
+    size_t page;
+    int status = KC_KAIMAN_OK;
+
+    if (strcmp(service->adapter, "anthropic") == 0) {
+        query = "after_id";
+        next = "last_id";
+    } else if (strcmp(service->adapter, "gemini") == 0) {
+        query = "pageToken";
+        next = "nextPageToken";
+    } else if (profiles) {
+        query = "nextToken";
+        next = "nextToken";
+    }
+    for (page = 0U; page < 100U; page++) {
+        kc_json_value_t *root = NULL;
+        const char *value = NULL;
+        char *following = NULL;
+
+        status = catalog_request(service, base, path, query, cursor,
+            authorization, &root);
+        if (status == KC_KAIMAN_OK) {
+            status = catalog_page(root, service, profiles, buffer, count);
+        }
+        if (status == KC_KAIMAN_OK && next != NULL &&
+            (strcmp(query, "after_id") != 0 ||
+                kc_json_boolean(kc_json_member(root, "has_more")))) {
+            value = kc_json_text(kc_json_member(root, next));
+            if (value != NULL && *value != '\0') {
+                if (cursor != NULL && strcmp(value, cursor) == 0) {
+                    status = KC_KAIMAN_EFORMAT;
+                } else {
+                    following = kc_util_strdup(value);
+                    if (following == NULL) status = KC_KAIMAN_ENOMEM;
+                }
+            } else if (strcmp(query, "after_id") == 0) {
+                status = KC_KAIMAN_EFORMAT;
+            }
+        }
+        kc_json_free(root);
+        kc_kaiman_free(cursor);
+        cursor = following;
+        if (status != KC_KAIMAN_OK || cursor == NULL) break;
+    }
+    if (page == 100U) status = KC_KAIMAN_EFORMAT;
+    kc_kaiman_free(cursor);
+    return status;
+}
+
+/**
+ * Discover a service catalog without using configured model restrictions.
+ * @param service Source service.
+ * @param buffer Destination list.
+ * @param count Number of models already written.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int catalog_service(const kc_kaiman_service_t *service,
+    kc_buffer_t *buffer, size_t *count) {
+    const char *path = "/models";
+    char *authorization = NULL;
+    char *base = NULL;
+    size_t initial_size = buffer->size;
+    size_t initial_count = *count;
+    int status;
+
+    if (service->adapter == NULL || service->base_url == NULL) {
+        return KC_KAIMAN_EINVAL;
+    }
+    status = service_authorization(service, &authorization);
+    if (status != KC_KAIMAN_OK) return status;
+    if (strcmp(service->adapter, "opencode") == 0) path = "/api/provider";
+    else if (strcmp(service->adapter, "ollama") == 0) path = "/api/tags";
+    else if (strcmp(service->adapter, "bedrock") == 0) path = "/foundation-models";
+    base = strcmp(service->adapter, "bedrock") == 0 ?
+        catalog_bedrock_base(service->base_url) :
+        kc_util_strdup(service->base_url);
+    if (base == NULL) {
+        kc_kaiman_free(authorization);
+        return KC_KAIMAN_ENOMEM;
+    }
+    status = catalog_fetch(service, base, path, 0, authorization, buffer, count);
+    if (status != KC_KAIMAN_OK && strcmp(service->adapter, "opencode") == 0) {
+        buffer->size = initial_size;
+        buffer->data[initial_size] = '\0';
+        *count = initial_count;
+        status = catalog_fetch(service, base, "/provider", 0, authorization,
+            buffer, count);
+    }
+    if (strcmp(service->adapter, "bedrock") == 0) {
+        size_t before = buffer->size;
+        size_t before_count = *count;
+        int profiles;
+
+        if (status != KC_KAIMAN_OK) {
+            buffer->size = initial_size;
+            buffer->data[initial_size] = '\0';
+            *count = initial_count;
+            before = initial_size;
+            before_count = initial_count;
+        }
+        profiles = catalog_fetch(service, base, "/inference-profiles", 1,
+            authorization, buffer, count);
+        if (profiles != KC_KAIMAN_OK) {
+            buffer->size = before;
+            buffer->data[before] = '\0';
+            *count = before_count;
+        } else {
+            status = KC_KAIMAN_OK;
+        }
+    }
+    kc_kaiman_free(base);
+    kc_kaiman_free(authorization);
+    return status;
+}
+
+/**
+ * Build the unified model catalog from currently reachable services.
+ * @param gateway Open gateway.
+ * @param out Receives owned OpenAI-compatible JSON.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int gateway_models(kc_kaiman_gateway_t *gateway, char **out) {
+    kc_buffer_t *buffer = NULL;
+    kc_kaiman_t *kaiman = gateway->manager;
+    size_t index;
+    size_t count = 0U;
+    size_t available = 0U;
+    int status;
+
+    *out = NULL;
+    status = kc_buffer_open(&buffer);
+    if (status != KC_KAIMAN_OK) return status;
+    status = kc_buffer_text(buffer, "{\"object\":\"list\",\"data\":[");
+    for (index = 0U; status == KC_KAIMAN_OK && index < kaiman->count; index++) {
+        size_t before = buffer->size;
+        size_t before_count = count;
+        int discovered = catalog_service(kaiman->services[index], buffer, &count);
+
+        if (discovered == KC_KAIMAN_OK) {
+            available++;
+        } else {
+            buffer->size = before;
+            buffer->data[before] = '\0';
+            count = before_count;
+        }
+    }
+    if (status == KC_KAIMAN_OK && kaiman->count != 0U && available == 0U) {
+        status = KC_KAIMAN_EHTTP;
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "]}");
+    if (status == KC_KAIMAN_OK) {
+        *out = kc_util_strdup(kc_buffer_value(buffer));
+        if (*out == NULL) status = KC_KAIMAN_ENOMEM;
+    }
+    kc_buffer_close(buffer);
+    return status;
 }
 
 /**
@@ -3381,10 +3798,11 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
     }
     if (strcmp(request->method, "GET") == 0 &&
         strcmp(request->path, "/v1/models") == 0) {
-        models = gateway_models(gateway->manager);
-        if (models == NULL) {
-            (void)gateway_failure(gateway, connection->peer, 500,
-                "could not build the model list");
+        int status = gateway_models(gateway, &models);
+        if (status != KC_KAIMAN_OK) {
+            (void)gateway_failure(gateway, connection->peer,
+                status == KC_KAIMAN_EHTTP ? 502 : 500,
+                "could not discover the model catalog");
         } else {
             (void)gateway_json(gateway, connection->peer, 200, models);
             kc_kaiman_free(models);
@@ -3407,19 +3825,20 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
             return;
         }
         {
-            const char *adapter = NULL;
             const char *requested = kc_json_text(kc_json_member(root, "model"));
+            const char *model = NULL;
             kc_kaiman_service_t *service = NULL;
-            if (gateway_select(gateway->manager, requested, &service) ==
-                KC_KAIMAN_OK) {
-                adapter = service->adapter;
-            }
-            if (adapter != NULL && strcmp(adapter, "opencode") == 0) {
-                (void)opencode_chat(gateway, connection->peer, root);
-            } else if (adapter != NULL && strcmp(adapter, "openai") != 0) {
-                (void)native_chat(gateway, connection->peer, root, service);
+
+            if (gateway_select(gateway->manager, requested, &service, &model) !=
+                KC_KAIMAN_OK || service->adapter == NULL) {
+                (void)gateway_failure(gateway, connection->peer, 404,
+                    "unknown model; use a service/model identifier");
+            } else if (strcmp(service->adapter, "opencode") == 0) {
+                (void)opencode_chat(gateway, connection->peer, root, service, model);
+            } else if (strcmp(service->adapter, "openai") == 0) {
+                (void)openai_chat(gateway, connection->peer, root, service, model);
             } else {
-                (void)openai_chat(gateway, connection->peer, root);
+                (void)native_chat(gateway, connection->peer, root, service, model);
             }
         }
         kc_json_free(root);

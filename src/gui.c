@@ -121,8 +121,8 @@ static int append_json_string(kc_buffer_t *buffer, const char *text) {
  * @return KC_KAIMAN_OK or an error status.
  */
 static int append_services(kc_buffer_t *buffer, kc_kaiman_t *kaiman) {
-    static const char *const keys[] = {"name", "adapter", "url", "model",
-        "env", "token-command", "scheme", "user", "keyring"};
+    static const char *const keys[] = {"name", "adapter", "url", "env",
+        "token-command", "scheme", "user", "keyring"};
     kc_kaiman_service_t **services = NULL;
     size_t count = 0U;
     size_t index;
