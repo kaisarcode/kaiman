@@ -50,11 +50,11 @@
                         </select>
                     </div>
                     <div class="field">
-                        <label for="field-scheme">Scheme</label>
+                        <label for="field-scheme">Authentication</label>
                         <select id="field-scheme" name="scheme">
-                            <option value="none">none</option>
-                            <option value="bearer">bearer</option>
-                            <option value="basic">basic</option>
+                            <option value="none">None</option>
+                            <option value="bearer">API key</option>
+                            <option value="basic">User and password</option>
                         </select>
                     </div>
                 </div>
@@ -66,23 +66,28 @@
                     <label for="field-model">Model</label>
                     <input id="field-model" name="model" type="text" autocomplete="off">
                 </div>
-                <div class="field-row">
-                    <div class="field">
-                        <label for="field-env">Environment variable</label>
-                        <input id="field-env" name="env" type="text" autocomplete="off">
-                    </div>
-                    <div class="field">
-                        <label for="field-timeout">Timeout</label>
-                        <input id="field-timeout" name="timeout" type="number" min="1" max="600" value="60">
-                    </div>
+                <div class="field" id="auth-user" hidden>
+                    <label for="field-user">Username</label>
+                    <input id="field-user" name="user" type="text" autocomplete="off" disabled>
+                </div>
+                <div class="field" id="auth-source" hidden>
+                    <label for="field-source" id="source-label">API key source</label>
+                    <select id="field-source" disabled>
+                        <option value="env">Environment variable</option>
+                        <option value="token-command">Command</option>
+                    </select>
+                </div>
+                <div class="field" id="auth-env" hidden>
+                    <label for="field-env" id="env-label">API key environment variable</label>
+                    <input id="field-env" name="env" type="text" autocomplete="off" disabled>
+                </div>
+                <div class="field" id="auth-command" hidden>
+                    <label for="field-token-command" id="command-label">API key command</label>
+                    <input id="field-token-command" name="token-command" type="text" autocomplete="off" disabled>
                 </div>
                 <div class="field">
-                    <label for="field-token-command">Token command</label>
-                    <input id="field-token-command" name="token-command" type="text" autocomplete="off">
-                </div>
-                <div class="field">
-                    <label for="field-user">User</label>
-                    <input id="field-user" name="user" type="text" autocomplete="off">
+                    <label for="field-timeout">Timeout</label>
+                    <input id="field-timeout" name="timeout" type="number" min="1" max="600" value="60">
                 </div>
                 <div class="form-actions">
                     <button class="button button-primary" id="save-service" type="submit">Save</button>

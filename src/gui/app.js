@@ -124,6 +124,30 @@ function renderServices(services) {
 }
 
 /**
+ * Show only the fields used by the selected authentication method.
+ * @return void
+ */
+function renderAuthentication() {
+    var scheme = byId("field-scheme").value;
+    var authenticated = scheme === "bearer" || scheme === "basic";
+    var basic = scheme === "basic";
+    var command = byId("field-source").value === "token-command";
+    var credential = basic ? "Password" : "API key";
+
+    byId("auth-user").hidden = !basic;
+    byId("field-user").disabled = !basic;
+    byId("auth-source").hidden = !authenticated;
+    byId("field-source").disabled = !authenticated;
+    byId("auth-env").hidden = !authenticated || command;
+    byId("field-env").disabled = !authenticated || command;
+    byId("auth-command").hidden = !authenticated || !command;
+    byId("field-token-command").disabled = !authenticated || !command;
+    byId("source-label").textContent = credential + " source";
+    byId("env-label").textContent = credential + " environment variable";
+    byId("command-label").textContent = credential + " command";
+}
+
+/**
  * Reset the service form to its add state.
  * @return void
  */
@@ -135,6 +159,8 @@ function clearForm() {
     form.reset();
     byId("field-adapter").value = "openai";
     byId("field-scheme").value = "none";
+    byId("field-source").value = "env";
+    renderAuthentication();
     byId("field-timeout").value = "60";
     byId("field-name").readOnly = false;
     byId("editor-heading").textContent = "Add service";
@@ -159,6 +185,12 @@ function fillForm(service) {
     for (index = 0; index < fields.length; index++) {
         setValue(byId("field-" + fields[index]), service[fields[index]]);
     }
+    if (!byId("field-scheme").value) {
+        byId("field-scheme").value = "bearer";
+    }
+    byId("field-source").value = service["token-command"] ?
+        "token-command" : "env";
+    renderAuthentication();
     setValue(byId("field-timeout"), service.timeout);
     byId("field-name").readOnly = true;
     byId("editor-heading").textContent = "Edit " + service.name;
@@ -191,9 +223,12 @@ function readForm() {
         params.url = byId("field-url").value;
     }
     params.model = byId("field-model").value;
-    params.env = byId("field-env").value;
-    params["token-command"] = byId("field-token-command").value;
-    params.user = byId("field-user").value;
+    params.env = byId("field-env").disabled ? "" :
+        byId("field-env").value;
+    params["token-command"] = byId("field-token-command").disabled ? "" :
+        byId("field-token-command").value;
+    params.user = byId("field-user").disabled ? "" :
+        byId("field-user").value;
     timeout = parseInt(byId("field-timeout").value, 10);
     params.timeout = isNaN(timeout) ? 0 : timeout;
     return params;
@@ -431,6 +466,8 @@ function bindEvents() {
     byId("service-list").addEventListener("click", handleServiceSelect);
     byId("new-service").addEventListener("click", handleNew);
     byId("service-form").addEventListener("submit", handleSubmit);
+    byId("field-scheme").addEventListener("change", renderAuthentication);
+    byId("field-source").addEventListener("change", renderAuthentication);
     byId("remove-service").addEventListener("click", handleRemove);
     byId("remove-dialog").addEventListener("close", handleRemoveConfirm);
     byId("toggle-gateway").addEventListener("click", handleToggle);
