@@ -36,6 +36,8 @@ if(KC_GUI AND NOT KC_LIBRARY_ONLY)
         configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/gui/${asset}"
             "${KC_OUTPUT_DIR}/gui/${asset}" COPYONLY)
     endforeach()
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/logo.png"
+        "${KC_OUTPUT_DIR}/gui/logo.png" COPYONLY)
     if(WIN32)
         set(KC_WEBVIEW2_LOADER
             "${CMAKE_CURRENT_SOURCE_DIR}/lib/kaisarcode/libwvw.c/lib/webview2/WebView2Loader.dll")

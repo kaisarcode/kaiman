@@ -124,6 +124,20 @@ select:focus-visible {
     border-bottom: 1px solid var(--border);
 }
 
+.identity {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+}
+
+.identity img {
+    display: block;
+    flex: none;
+    width: 46px;
+    height: 46px;
+    object-fit: contain;
+}
+
 .identity h1 {
     margin: 0;
     font-size: 20px;
