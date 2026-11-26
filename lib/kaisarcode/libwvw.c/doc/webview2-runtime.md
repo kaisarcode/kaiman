@@ -73,6 +73,15 @@ export KC_WEBVIEW2_DIR='Z:\home\USER\.local\share\webview2-runtime'
 wine your-app.exe
 ```
 
+To make that setting persist in the Wine prefix instead of exporting it in every
+shell, store it in the Wine environment registry key:
+
+```sh
+runtime="${XDG_DATA_HOME:-$HOME/.local/share}/webview2-runtime"
+wine reg add 'HKCU\Environment' /v KC_WEBVIEW2_DIR \
+    /d "$(winepath -w "$runtime" 2>/dev/null)" /f
+```
+
 `Z:` is Wine's default Unix drive mapping. Change it when the prefix uses a
 different mapping; `winepath -w "$runtime"` prints the correct value.
 

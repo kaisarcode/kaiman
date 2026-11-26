@@ -2613,6 +2613,8 @@ static int kc_wvw_create_window(kc_wvw_t *ctx) {
     DWORD style;
     DWORD ex_style;
     RECT rect;
+    int win_w;
+    int win_h;
     wchar_t *title;
     const wchar_t class_name[] = L"kc_wvw_window";
 
@@ -2639,29 +2641,32 @@ static int kc_wvw_create_window(kc_wvw_t *ctx) {
         ex_style |= WS_EX_TOOLWINDOW;
     }
 
-    rect.left = (ctx->opts.has_posx) ? ctx->opts.posx : CW_USEDEFAULT;
-    rect.top = (ctx->opts.has_posy) ? ctx->opts.posy : CW_USEDEFAULT;
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = ctx->opts.width;
+    rect.bottom = ctx->opts.height;
+    AdjustWindowRectEx(&rect, style, FALSE, ex_style);
+
+    win_w = rect.right - rect.left;
+    win_h = rect.bottom - rect.top;
+    if (ctx->opts.fullscreen) {
+        win_w = GetSystemMetrics(SM_CXSCREEN);
+        win_h = GetSystemMetrics(SM_CYSCREEN);
+        rect.left = (ctx->opts.has_posx) ? ctx->opts.posx : 0;
+        rect.top = (ctx->opts.has_posy) ? ctx->opts.posy : 0;
+    } else {
+        rect.left = (ctx->opts.has_posx) ? ctx->opts.posx : CW_USEDEFAULT;
+        rect.top = (ctx->opts.has_posy) ? ctx->opts.posy : CW_USEDEFAULT;
+    }
     if (rect.left != CW_USEDEFAULT) {
         int screen_w = GetSystemMetrics(SM_CXSCREEN);
-        int win_w = rect.right;
         if (rect.left < 0) rect.left = 0;
         else if (rect.left > screen_w - win_w) rect.left = screen_w - win_w;
     }
     if (rect.top != CW_USEDEFAULT) {
         int screen_h = GetSystemMetrics(SM_CYSCREEN);
-        int win_h = rect.bottom;
         if (rect.top < 0) rect.top = 0;
         else if (rect.top > screen_h - win_h) rect.top = screen_h - win_h;
-    }
-    rect.right = ctx->opts.width;
-    rect.bottom = ctx->opts.height;
-    AdjustWindowRectEx(&rect, style, FALSE, ex_style);
-
-    if (ctx->opts.fullscreen) {
-        rect.left = (ctx->opts.has_posx) ? ctx->opts.posx : 0;
-        rect.top = (ctx->opts.has_posy) ? ctx->opts.posy : 0;
-        rect.right = GetSystemMetrics(SM_CXSCREEN);
-        rect.bottom = GetSystemMetrics(SM_CYSCREEN);
     }
 
     title = kc_wvw_utf16_from_utf8(ctx->opts.title ? ctx->opts.title : "wvw");
@@ -2672,8 +2677,8 @@ static int kc_wvw_create_window(kc_wvw_t *ctx) {
         style,
         rect.left,
         rect.top,
-        rect.right - rect.left,
-        rect.bottom - rect.top,
+        win_w,
+        win_h,
         NULL,
         NULL,
         ctx->hinstance,
