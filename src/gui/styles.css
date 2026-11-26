@@ -136,6 +136,7 @@ select:focus-visible {
     width: 46px;
     height: 46px;
     object-fit: contain;
+    image-rendering: auto;
 }
 
 .identity h1 {

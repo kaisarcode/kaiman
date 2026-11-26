@@ -542,12 +542,12 @@ static int append_file_url(kc_buffer_t *buffer, const char *path) {
 }
 
 /**
- * Resolve the file URL of the bundled GUI entry document.
- * @return Owned URL, or NULL on failure.
+ * Resolve a bundled GUI asset relative to the executable.
+ * @param name Asset filename.
+ * @return Owned path, or NULL on failure.
  */
-static char *gui_index_url(void) {
+static char *gui_asset_path(const char *name) {
     kc_buffer_t *asset = NULL;
-    kc_buffer_t *url = NULL;
     char *executable = NULL;
     char *result = NULL;
     char *separator;
@@ -569,22 +569,36 @@ static char *gui_index_url(void) {
     }
 #endif
     if (separator != NULL) {
-        status = kc_buffer_format(asset, "%.*s%cgui/index.html",
-            (int)(separator - executable), executable, *separator);
+        status = kc_buffer_format(asset, "%.*s%cgui/%s",
+            (int)(separator - executable), executable, *separator, name);
     } else {
-        status = kc_buffer_text(asset, "gui/index.html");
+        status = kc_buffer_format(asset, "gui/%s", name);
     }
     if (status != KC_KAIMAN_OK) goto done;
-    status = kc_buffer_open(&url);
-    if (status != KC_KAIMAN_OK) goto done;
-    status = append_file_url(url, kc_buffer_value(asset));
-    if (status != KC_KAIMAN_OK) goto done;
-    result = kc_util_strdup(kc_buffer_value(url));
+    result = kc_util_strdup(kc_buffer_value(asset));
 
 done:
-    kc_buffer_close(url);
     kc_buffer_close(asset);
     kc_kaiman_free(executable);
+    return result;
+}
+
+/**
+ * Resolve the file URL of the bundled GUI entry document.
+ * @return Owned URL, or NULL on failure.
+ */
+static char *gui_index_url(void) {
+    kc_buffer_t *url = NULL;
+    char *path = gui_asset_path("index.html");
+    char *result = NULL;
+
+    if (path == NULL) return NULL;
+    if (kc_buffer_open(&url) == KC_KAIMAN_OK &&
+        append_file_url(url, path) == KC_KAIMAN_OK) {
+        result = kc_util_strdup(kc_buffer_value(url));
+    }
+    kc_buffer_close(url);
+    kc_kaiman_free(path);
     return result;
 }
 
@@ -611,6 +625,7 @@ int kc_kaiman_gui_run(void) {
     kc_wvw_options_t options;
     kc_wvw_bridge_options_t bridge;
     char *url = NULL;
+    char *icon = NULL;
     const char *detail;
     int width = 1120;
     int height = 760;
@@ -619,13 +634,19 @@ int kc_kaiman_gui_run(void) {
 
     state.stop = 0;
     url = gui_index_url();
-    if (url == NULL) {
+#ifdef _WIN32
+    icon = gui_asset_path("logo.ico");
+#else
+    icon = gui_asset_path("logo-128.png");
+#endif
+    if (url == NULL || icon == NULL) {
         fprintf(stderr, "kaiman: unable to resolve GUI assets\n");
         goto done;
     }
     memset(&options, 0, sizeof(options));
     options.url = url;
     options.title = "kaiman";
+    options.icon = icon;
     options.width = &width;
     options.height = &height;
     options.allow_file = 1;
@@ -672,6 +693,7 @@ done:
     kc_gui_active = NULL;
     kc_wvw_close(wvw);
     kc_kaiman_free(url);
+    kc_kaiman_free(icon);
     kc_kaiman_free(kc_gui_result);
     kc_gui_result = NULL;
     return result;

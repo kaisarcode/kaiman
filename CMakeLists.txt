@@ -32,12 +32,11 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${KC_OUTPUT_DIR}")
 
 if(KC_GUI AND NOT KC_LIBRARY_ONLY)
     file(MAKE_DIRECTORY "${KC_OUTPUT_DIR}/gui")
-    foreach(asset index.html app.js styles.css)
+    foreach(asset index.html app.js styles.css logo-46.png logo-92.png
+        logo-128.png logo.ico)
         configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/gui/${asset}"
             "${KC_OUTPUT_DIR}/gui/${asset}" COPYONLY)
     endforeach()
-    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/logo.png"
-        "${KC_OUTPUT_DIR}/gui/logo.png" COPYONLY)
     if(WIN32)
         set(KC_WEBVIEW2_LOADER
             "${CMAKE_CURRENT_SOURCE_DIR}/lib/kaisarcode/libwvw.c/lib/webview2/WebView2Loader.dll")
