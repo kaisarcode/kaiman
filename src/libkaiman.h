@@ -22,9 +22,14 @@ extern "C" {
 #define KC_KAIMAN_ENOMEM -2
 #define KC_KAIMAN_EFORMAT -3
 #define KC_KAIMAN_EIO -4
+#define KC_KAIMAN_EBUSY -5
+#define KC_KAIMAN_EPROTO -6
+#define KC_KAIMAN_EHTTP -7
+#define KC_KAIMAN_ETIMEOUT -8
 
 typedef struct kc_kaiman kc_kaiman_t;
 typedef struct kc_kaiman_service kc_kaiman_service_t;
+typedef struct kc_kaiman_gateway kc_kaiman_gateway_t;
 
 typedef struct {
     const char *path;
@@ -43,6 +48,10 @@ typedef struct {
     int timeout;
 } kc_kaiman_descriptor_t;
 
+typedef struct {
+    const char *executable;
+} kc_kaiman_process_options_t;
+
 /**
  * Open a service manager and load its saved configuration.
  * @param out Receives the manager, or NULL on failure.
@@ -57,6 +66,13 @@ int kc_kaiman_open(kc_kaiman_t **out, const kc_kaiman_options_t *options);
  * @return void
  */
 void kc_kaiman_close(kc_kaiman_t *kaiman);
+
+/**
+ * Reload services and gateway settings from the configured path.
+ * @param kaiman Open manager.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_load(kc_kaiman_t *kaiman);
 
 /**
  * Borrow all managed services in configuration order.
@@ -87,13 +103,6 @@ int kc_kaiman_get_service(const kc_kaiman_t *kaiman, const char *name,
  */
 int kc_kaiman_add_service(kc_kaiman_t *kaiman,
     const kc_kaiman_descriptor_t *descriptor, kc_kaiman_service_t **out);
-
-/**
- * Reload services and gateway settings from the configured path.
- * @param kaiman Open manager.
- * @return KC_KAIMAN_OK or an error status.
- */
-int kc_kaiman_load(kc_kaiman_t *kaiman);
 
 /**
  * Set the gateway listen address and persist the configuration.
@@ -170,6 +179,78 @@ int kc_kaiman_service_timeout(const kc_kaiman_service_t *service);
  * @return KC_KAIMAN_OK or an error status.
  */
 int kc_kaiman_service_remove(kc_kaiman_service_t *service);
+
+/**
+ * Open an HTTP gateway bound to an existing service manager.
+ * The manager must outlive the gateway. All borrowed service handles are
+ * invalidated by configuration reloads performed inside the gateway.
+ * @param out Receives the gateway, or NULL on failure.
+ * @param kaiman Open service manager.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_gateway_open(kc_kaiman_gateway_t **out, kc_kaiman_t *kaiman);
+
+/**
+ * Close a gateway and stop accepting requests.
+ * @param gateway Gateway to close, or NULL.
+ * @return void
+ */
+void kc_kaiman_gateway_close(kc_kaiman_gateway_t *gateway);
+
+/**
+ * Serve requests until the gateway is stopped.
+ * @param gateway Open gateway.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_gateway_run(kc_kaiman_gateway_t *gateway);
+
+/**
+ * Request that a running gateway stop after active work completes.
+ * @param gateway Open gateway, or NULL.
+ * @return void
+ */
+void kc_kaiman_gateway_stop(kc_kaiman_gateway_t *gateway);
+
+/**
+ * Borrow the address on which the gateway listens.
+ * @param gateway Open gateway.
+ * @return NUL terminated address, or NULL for an invalid gateway.
+ */
+const char *kc_kaiman_gateway_address(const kc_kaiman_gateway_t *gateway);
+
+/**
+ * Borrow the most recent gateway error message.
+ * @param gateway Open gateway, or NULL.
+ * @return NUL terminated message, or NULL when none is set.
+ */
+const char *kc_kaiman_gateway_error(const kc_kaiman_gateway_t *gateway);
+
+/**
+ * Start the gateway as an independent process.
+ * @param options Process options containing the executable path.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_start(const kc_kaiman_process_options_t *options);
+
+/**
+ * Stop the gateway process started by kc_kaiman_start().
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_stop(void);
+
+/**
+ * Describe the gateway process and endpoint.
+ * @param out Receives an owned description released with kc_kaiman_free().
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_status(char **out);
+
+/**
+ * Release memory returned by kc_kaiman_status().
+ * @param ptr Owned pointer, or NULL.
+ * @return void
+ */
+void kc_kaiman_free(void *ptr);
 
 #ifdef __cplusplus
 }

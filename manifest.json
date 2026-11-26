@@ -9,7 +9,7 @@
   "level": 1,
   "dependencies": [
     "libhttp",
-    "libkv",
-    "libnetl"
+    "libnetl",
+    "libtls"
   ]
 }

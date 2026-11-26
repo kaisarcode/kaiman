@@ -1,6 +1,6 @@
 /**
  * kaiman.c - Command line frontend for kaiman.
- * Summary: Manages saved AI services and the gateway listen address.
+ * Summary: Manages saved AI services and the gateway process.
  *
  * Author:  KaisarCode
  * Website: https://kaisarcode.com
@@ -18,18 +18,20 @@
  * @return void
  */
 static void usage(void) {
-    printf("kaiman - unified AI service manager\n\n");
+    printf("kaiman - unified AI gateway and service manager\n\n");
     printf("Usage:\n");
     printf("  kaiman <command> [arguments]\n\n");
     printf("Commands:\n");
-    printf("  service add NAME [key=value ...]\n");
-    printf("  service list\n");
-    printf("  service edit NAME [key=value ...]\n");
-    printf("  service remove NAME\n");
-    printf("  serve [--listen host:port]\n\n");
+    printf("  add NAME [key=value ...]        Add a configured service\n");
+    printf("  edit NAME [key=value ...]       Edit a configured service\n");
+    printf("  remove NAME                     Remove a configured service\n");
+    printf("  list                            List configured services\n");
+    printf("  start                           Start the gateway process\n");
+    printf("  stop                            Stop the gateway process\n");
+    printf("  status                          Show gateway process status\n\n");
     printf("Options:\n");
-    printf("  -h, --help                  Show this help\n");
-    printf("  -v, --version               Show version\n\n");
+    printf("  -h, --help                      Show this help\n");
+    printf("  -v, --version                   Show version\n\n");
     printf("Service keys: adapter, url, model, env, token-command,\n");
     printf("  scheme, user, timeout\n");
 }
@@ -67,6 +69,7 @@ static void print_service(const kc_kaiman_service_t *service) {
 
 /**
  * Apply key=value arguments to one managed service.
+ * @param kaiman Open manager.
  * @param service Managed service.
  * @param arguments Argument array.
  * @param count Number of arguments.
@@ -96,18 +99,15 @@ static int apply_fields(kc_kaiman_t *kaiman, kc_kaiman_service_t *service,
 }
 
 /**
- * Run the service subcommand.
- * @param arguments Arguments after "service".
+ * Run the add command.
+ * @param arguments Arguments after the command.
  * @param count Number of arguments.
  * @return 0 on success, 1 on failure.
  */
-static int service_command(char **arguments, int count) {
+static int add_command(char **arguments, int count) {
     kc_kaiman_t *kaiman = NULL;
-    kc_kaiman_service_t **services = NULL;
     kc_kaiman_service_t *service = NULL;
     kc_kaiman_descriptor_t descriptor;
-    size_t service_count = 0U;
-    size_t index;
     int status;
     int result = 1;
 
@@ -120,52 +120,15 @@ static int service_command(char **arguments, int count) {
         report_error(NULL, status);
         return 1;
     }
-    if (strcmp(arguments[0], "list") == 0 && count == 1) {
-        status = kc_kaiman_get_services(kaiman, &services, &service_count);
-        if (status != KC_KAIMAN_OK) {
-            report_error(kaiman, status);
-            goto done;
-        }
-        for (index = 0U; index < service_count; index++) {
-            print_service(services[index]);
-        }
+    memset(&descriptor, 0, sizeof(descriptor));
+    descriptor.name = arguments[0];
+    status = kc_kaiman_add_service(kaiman, &descriptor, &service);
+    if (status != KC_KAIMAN_OK) {
+        report_error(kaiman, status);
+        goto done;
+    }
+    if (apply_fields(kaiman, service, arguments + 1, count - 1) == 0) {
         result = 0;
-    } else if (strcmp(arguments[0], "add") == 0 && count >= 2) {
-        memset(&descriptor, 0, sizeof(descriptor));
-        descriptor.name = arguments[1];
-        status = kc_kaiman_add_service(kaiman, &descriptor, &service);
-        if (status != KC_KAIMAN_OK) {
-            report_error(kaiman, status);
-            goto done;
-        }
-        if (apply_fields(kaiman, service, arguments + 2, count - 2)) {
-            goto done;
-        }
-        result = 0;
-    } else if (strcmp(arguments[0], "edit") == 0 && count >= 2) {
-        status = kc_kaiman_get_service(kaiman, arguments[1], &service);
-        if (status != KC_KAIMAN_OK) {
-            report_error(kaiman, status);
-            goto done;
-        }
-        if (apply_fields(kaiman, service, arguments + 2, count - 2)) {
-            goto done;
-        }
-        result = 0;
-    } else if (strcmp(arguments[0], "remove") == 0 && count == 2) {
-        status = kc_kaiman_get_service(kaiman, arguments[1], &service);
-        if (status != KC_KAIMAN_OK) {
-            report_error(kaiman, status);
-            goto done;
-        }
-        status = kc_kaiman_service_remove(service);
-        if (status != KC_KAIMAN_OK) {
-            report_error(kaiman, status);
-            goto done;
-        }
-        result = 0;
-    } else {
-        usage();
     }
 
 done:
@@ -174,44 +137,142 @@ done:
 }
 
 /**
- * Run the serve subcommand.
- * @param arguments Arguments after "serve".
+ * Run the edit command.
+ * @param arguments Arguments after the command.
  * @param count Number of arguments.
  * @return 0 on success, 1 on failure.
  */
-static int serve_command(char **arguments, int count) {
+static int edit_command(char **arguments, int count) {
     kc_kaiman_t *kaiman = NULL;
+    kc_kaiman_service_t *service = NULL;
     int status;
     int result = 1;
-    int index;
+
+    if (count < 1) {
+        usage();
+        return 1;
+    }
+    status = kc_kaiman_open(&kaiman, NULL);
+    if (status != KC_KAIMAN_OK) {
+        report_error(NULL, status);
+        return 1;
+    }
+    status = kc_kaiman_get_service(kaiman, arguments[0], &service);
+    if (status != KC_KAIMAN_OK) {
+        report_error(kaiman, status);
+        goto done;
+    }
+    if (apply_fields(kaiman, service, arguments + 1, count - 1) == 0) {
+        result = 0;
+    }
+
+done:
+    kc_kaiman_close(kaiman);
+    return result;
+}
+
+/**
+ * Run the remove command.
+ * @param arguments Arguments after the command.
+ * @param count Number of arguments.
+ * @return 0 on success, 1 on failure.
+ */
+static int remove_command(char **arguments, int count) {
+    kc_kaiman_t *kaiman = NULL;
+    kc_kaiman_service_t *service = NULL;
+    int status;
+    int result = 1;
+
+    if (count != 1) {
+        usage();
+        return 1;
+    }
+    status = kc_kaiman_open(&kaiman, NULL);
+    if (status != KC_KAIMAN_OK) {
+        report_error(NULL, status);
+        return 1;
+    }
+    status = kc_kaiman_get_service(kaiman, arguments[0], &service);
+    if (status != KC_KAIMAN_OK) {
+        report_error(kaiman, status);
+        goto done;
+    }
+    status = kc_kaiman_service_remove(service);
+    if (status != KC_KAIMAN_OK) {
+        report_error(kaiman, status);
+        goto done;
+    }
+    result = 0;
+
+done:
+    kc_kaiman_close(kaiman);
+    return result;
+}
+
+/**
+ * Run the list command.
+ * @return 0 on success, 1 on failure.
+ */
+static int list_command(void) {
+    kc_kaiman_t *kaiman = NULL;
+    kc_kaiman_service_t **services = NULL;
+    size_t count = 0U;
+    size_t index;
+    int status;
+    int result = 1;
 
     status = kc_kaiman_open(&kaiman, NULL);
     if (status != KC_KAIMAN_OK) {
         report_error(NULL, status);
         return 1;
     }
-    for (index = 0; index < count; index++) {
-        char *separator = strchr(arguments[index], '=');
-        if (separator != NULL) *separator = '\0';
-        if (strcmp(arguments[index], "--listen") == 0) {
-            const char *value = separator != NULL ? separator + 1 :
-                (index + 1 < count ? arguments[++index] : NULL);
-            status = kc_kaiman_listen(kaiman, value);
-            if (status != KC_KAIMAN_OK) {
-                report_error(kaiman, status);
-                goto done;
-            }
-        } else {
-            fprintf(stderr, "kaiman: unknown serve option: %s\n",
-                arguments[index]);
-            goto done;
-        }
+    status = kc_kaiman_get_services(kaiman, &services, &count);
+    if (status != KC_KAIMAN_OK) {
+        report_error(kaiman, status);
+        goto done;
     }
-    printf("gateway listen: %s\n", kc_kaiman_address(kaiman));
-    printf("gateway transport is not enabled in this build\n");
+    for (index = 0U; index < count; index++) {
+        print_service(services[index]);
+    }
     result = 0;
 
 done:
+    kc_kaiman_close(kaiman);
+    return result;
+}
+
+/**
+ * Run the gateway in the foreground.
+ * @return 0 on success, 1 on failure.
+ */
+static int serve_command(void) {
+    kc_kaiman_t *kaiman = NULL;
+    kc_kaiman_gateway_t *gateway = NULL;
+    int status;
+    int result = 1;
+
+    status = kc_kaiman_open(&kaiman, NULL);
+    if (status != KC_KAIMAN_OK) {
+        report_error(NULL, status);
+        return 1;
+    }
+    status = kc_kaiman_gateway_open(&gateway, kaiman);
+    if (status != KC_KAIMAN_OK) {
+        report_error(kaiman, status);
+        if (kc_kaiman_gateway_error(gateway) != NULL) {
+            fprintf(stderr, "kaiman: %s\n", kc_kaiman_gateway_error(gateway));
+        }
+        goto done;
+    }
+    status = kc_kaiman_gateway_run(gateway);
+    if (status != KC_KAIMAN_OK) {
+        report_error(NULL, status);
+        goto done;
+    }
+    result = 0;
+
+done:
+    kc_kaiman_gateway_close(gateway);
     kc_kaiman_close(kaiman);
     return result;
 }
@@ -223,6 +284,9 @@ done:
  * @return 0 on success, 1 on failure.
  */
 int main(int argc, char **argv) {
+    char *description = NULL;
+    int status;
+
     if (argc < 2) {
         usage();
         return 1;
@@ -236,11 +300,46 @@ int main(int argc, char **argv) {
         printf("%s\n", kc_kaiman_version());
         return 0;
     }
-    if (strcmp(argv[1], "service") == 0) {
-        return service_command(argv + 2, argc - 2);
+    if (strcmp(argv[1], "--internal-serve") == 0) {
+        return serve_command();
     }
-    if (strcmp(argv[1], "serve") == 0) {
-        return serve_command(argv + 2, argc - 2);
+    if (strcmp(argv[1], "add") == 0) {
+        return add_command(argv + 2, argc - 2);
+    }
+    if (strcmp(argv[1], "edit") == 0) {
+        return edit_command(argv + 2, argc - 2);
+    }
+    if (strcmp(argv[1], "remove") == 0) {
+        return remove_command(argv + 2, argc - 2);
+    }
+    if (strcmp(argv[1], "list") == 0 && argc == 2) {
+        return list_command();
+    }
+    if (strcmp(argv[1], "start") == 0 && argc == 2) {
+        status = kc_kaiman_start(NULL);
+        if (status != KC_KAIMAN_OK) {
+            report_error(NULL, status);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "stop") == 0 && argc == 2) {
+        status = kc_kaiman_stop();
+        if (status != KC_KAIMAN_OK) {
+            report_error(NULL, status);
+            return 1;
+        }
+        return 0;
+    }
+    if (strcmp(argv[1], "status") == 0 && argc == 2) {
+        status = kc_kaiman_status(&description);
+        if (status != KC_KAIMAN_OK) {
+            report_error(NULL, status);
+            return 1;
+        }
+        printf("%s", description);
+        kc_kaiman_free(description);
+        return 0;
     }
     usage();
     return 1;

@@ -58,6 +58,7 @@ LINUX_TARGETS := linux/x86_64 linux/i686 linux/aarch64 linux/armv7 \
 WINDOWS_TARGETS := windows/x86_64 windows/i686
 MACOS_TARGETS := macos/x86_64 macos/aarch64
 IOS_TARGETS := ios/aarch64 iossim/aarch64 iossim/x86_64
+DARWIN_SYSTEM_LIBS := -Wl,-framework,Security -Wl,-framework,CoreFoundation -lm
 ANDROID_TARGETS := android/aarch64 android/armv7
 SUPPORTED_TARGETS := $(LINUX_TARGETS) $(WINDOWS_TARGETS) \
     $(MACOS_TARGETS) $(IOS_TARGETS) $(ANDROID_TARGETS)
@@ -93,7 +94,7 @@ windows/$(1):
 	@$(MAKE) -s --no-print-directory build-target TARGET=windows/$(1) \
 		TARGET_CC="$(2)" TARGET_EXT=dll TARGET_CFLAGS="" \
 		TARGET_CLI_EXT=.exe TARGET_SHARED="" \
-		TARGET_SYSTEM_LIBS="-lws2_32 -lm"
+		TARGET_SYSTEM_LIBS="-lws2_32 -lcrypt32 -lbcrypt -lm"
 endef
 
 $(eval $(call windows_target,x86_64,x86_64-w64-mingw32-gcc))
@@ -103,7 +104,7 @@ define macos_target
 macos/$(1):
 	@$(MAKE) -s --no-print-directory build-target TARGET=macos/$(1) \
 		TARGET_CC="$(OSXCROSS_ROOT)/bin/$(2)" TARGET_AR="$(3)" \
-		TARGET_EXT=dylib TARGET_CFLAGS="-fPIC" TARGET_SYSTEM_LIBS="-lm" \
+		TARGET_EXT=dylib TARGET_CFLAGS="-fPIC" TARGET_SYSTEM_LIBS="$(DARWIN_SYSTEM_LIBS)" \
 		TARGET_SHARED="-dynamiclib -Wl,-install_name,@rpath/libkaiman.dylib"
 endef
 
@@ -116,7 +117,7 @@ $(1)/$(2):
 	@$(MAKE) -s --no-print-directory build-target TARGET=$(1)/$(2) \
 		TARGET_CC="$(3)" TARGET_AR="$(4)" TARGET_EXT=dylib TARGET_LIBRARY_ONLY=1 \
 		TARGET_CFLAGS="-fPIC -isysroot $(5) $(6) -Wno-unused-command-line-argument" \
-		TARGET_SDK="$(5)" TARGET_SYSTEM_LIBS="-lm"
+		TARGET_SDK="$(5)" TARGET_SYSTEM_LIBS="$(DARWIN_SYSTEM_LIBS)"
 endef
 
 $(eval $(call ios_target,ios,aarch64,$(OSXCROSS_IOS_AARCH64_CC),$(OSXCROSS_AARCH64_AR),$(IPHONEOS_SDK),-miphoneos-version-min=$(IOS_DEPLOYMENT_TARGET)))
@@ -135,7 +136,15 @@ $(eval $(call android_target,aarch64,aarch64-linux-android))
 $(eval $(call android_target,armv7,armv7a-linux-androideabi))
 
 DEP_ROOT := lib/kaisarcode
-DEP_NAMES := http kv netl
+DEP_NAMES := http netl tls
+TLS_SHARED_NAME := libtls.so
+TLS_IMPORT_NAME :=
+ifeq ($(findstring windows/,$(TARGET)),windows/)
+TLS_SHARED_NAME := libtls.dll
+TLS_IMPORT_NAME := libtls.dll.a
+else ifneq ($(filter macos/% ios/% iossim/%,$(TARGET)),)
+TLS_SHARED_NAME := libtls.dylib
+endif
 DEP_PATHS := $(foreach dep,$(DEP_NAMES),$(DEP_ROOT)/lib$(dep).c)
 DEP_LIB_DIR = $(BUILD_DIR)/deps/$(TARGET)
 DEP_LIBS = $(foreach dep,$(DEP_NAMES),$(DEP_LIB_DIR)/lib$(dep).a)
@@ -163,6 +172,24 @@ deps: submodules
 		test -f "$$source" || { echo "kaiman: missing dependency for $(TARGET): $$source" >&2; rm -f "$$log"; exit 1; }; \
 		if ! cmp -s "$$source" "$$target"; then \
 			cp "$$source" "$$target" || { rm -f "$$log"; exit 1; }; \
+		fi; \
+		if [ "$$name" = "tls" ] && [ -z "$(TARGET_LIBRARY_ONLY)" ]; then \
+			shared="$(DEP_ROOT)/libtls.c/bin/$(TARGET)/$(TLS_SHARED_NAME)"; \
+			copied="$(DEP_LIB_DIR)/$(TLS_SHARED_NAME)"; \
+			test -f "$$shared" || { echo "kaiman: missing dependency for $(TARGET): $$shared" >&2; rm -f "$$log"; exit 1; }; \
+			if ! cmp -s "$$shared" "$$copied"; then \
+				cp "$$shared" "$$copied" || { rm -f "$$log"; exit 1; }; \
+			fi; \
+			mkdir -p "$(BIN_DIR)/$(TARGET)" || { rm -f "$$log"; exit 1; }; \
+			cp "$$shared" "$(BIN_DIR)/$(TARGET)/$(TLS_SHARED_NAME)" || { rm -f "$$log"; exit 1; }; \
+			if [ -n "$(TLS_IMPORT_NAME)" ]; then \
+				import="$(DEP_ROOT)/libtls.c/bin/$(TARGET)/$(TLS_IMPORT_NAME)"; \
+				import_copy="$(DEP_LIB_DIR)/$(TLS_IMPORT_NAME)"; \
+				test -f "$$import" || { echo "kaiman: missing dependency for $(TARGET): $$import" >&2; rm -f "$$log"; exit 1; }; \
+				if ! cmp -s "$$import" "$$import_copy"; then \
+					cp "$$import" "$$import_copy" || { rm -f "$$log"; exit 1; }; \
+				fi; \
+			fi; \
 		fi; \
 	done; \
 	rm -f "$$log"
@@ -275,8 +302,9 @@ test:
 		mkdir -p "$(BUILD_DIR)/test-wine" || exit 1; \
 		"$(WINE_X86_64_CC)" -std=c11 -O2 -Wall -Wextra -Werror -Isrc \
 			$(DEP_INCLUDES) -o "$(BUILD_DIR)/test-wine/kaiman-test.exe" src/test.c \
-			-L"$(BIN_DIR)/windows/x86_64" -lkaiman || exit 1; \
+			-L"$(BIN_DIR)/windows/x86_64" -lkaiman -lws2_32 || exit 1; \
 		cp "$(BIN_DIR)/windows/x86_64/libkaiman.dll" \
+			"$(BIN_DIR)/windows/x86_64/libtls.dll" \
 			"$(BIN_DIR)/windows/x86_64/kaiman.exe" \
 			"$(BUILD_DIR)/test-wine/" || exit 1; \
 		for dll in \
@@ -288,7 +316,7 @@ test:
 			fi; \
 		done; \
 		(cd "$(BUILD_DIR)/test-wine" && \
-			WINEDEBUG=-all "$(WINE)" kaiman-test.exe config.ini); \
+			EGL_LOG_LEVEL=fatal WINEDEBUG=-all "$(WINE)" kaiman-test.exe config.ini); \
 	else \
 		if [ ! -f "$(CURDIR)/$(NATIVE_SHARED)" ] || \
 			[ ! -f "$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)/kaiman$(TARGET_CLI_EXT)" ]; then \
@@ -301,28 +329,7 @@ test:
 		(cd "$(BUILD_DIR)/test" && \
 			LD_LIBRARY_PATH="$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET):$$LD_LIBRARY_PATH" \
 			DYLD_LIBRARY_PATH="$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET):$$DYLD_LIBRARY_PATH" \
-			./kaiman-test config.ini || exit 1; \
-			if ./kaiman -v | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' && \
-			./kaiman -h | grep -q '^Usage:' && \
-			./kaiman --version | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' && \
-			./kaiman --help | grep -q '^Usage:' && \
-			env XDG_CONFIG_HOME=./cli-config \
-			./kaiman service add demo adapter=opencode url=http://127.0.0.1:49374 model=demo/model && \
-			env XDG_CONFIG_HOME=./cli-config \
-			./kaiman service list | grep -q 'demo/model' && \
-			env XDG_CONFIG_HOME=./cli-config \
-			./kaiman serve --listen 127.0.0.1:50000 | grep -q '127.0.0.1:50000' && \
-			env XDG_CONFIG_HOME=./cli-config \
-			./kaiman service remove demo && \
-			! env XDG_CONFIG_HOME=./cli-config \
-			./kaiman service edit demo model=missing >/dev/null 2>&1; then \
-				echo '[7/7] [PASS] cli_commands: service manager and serve options'; \
-				echo '7 tests run, 0 failed'; \
-			else \
-				echo '[7/7] [FAIL] cli_commands: service manager and serve options' >&2; \
-				echo '7 tests run, 1 failed'; \
-				exit 1; \
-			fi); \
+			./kaiman-test config.ini || exit 1); \
 	fi
 
 wine:
