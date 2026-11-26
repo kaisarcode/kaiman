@@ -137,7 +137,6 @@ function clearForm() {
     byId("field-timeout").value = "60";
     byId("field-name").readOnly = false;
     byId("editor-heading").textContent = "Add service";
-    byId("save-service").textContent = "Save service";
     byId("remove-service").hidden = true;
     byId("cancel-edit").hidden = true;
     for (index = 0; index < items.length; index++) {
@@ -163,7 +162,6 @@ function fillForm(service) {
     setValue(byId("field-timeout"), service.timeout);
     byId("field-name").readOnly = true;
     byId("editor-heading").textContent = "Edit " + service.name;
-    byId("save-service").textContent = "Save changes";
     byId("remove-service").hidden = false;
     byId("cancel-edit").hidden = false;
     for (index = 0; index < items.length; index++) {
@@ -349,19 +347,6 @@ async function handleListen() {
 }
 
 /**
- * Close the native window.
- * @return A promise resolving after the command completes.
- */
-async function handleQuit() {
-    try {
-        await bridge("quit", null);
-        showMessage("Closing.", "info");
-    } catch (error) {
-        showMessage(describeError(error), "error");
-    }
-}
-
-/**
  * Attach interface event listeners.
  * @return void
  */
@@ -373,7 +358,6 @@ function bindEvents() {
     byId("remove-service").addEventListener("click", handleRemove);
     byId("toggle-gateway").addEventListener("click", handleToggle);
     byId("apply-listen").addEventListener("click", handleListen);
-    byId("quit").addEventListener("click", handleQuit);
 }
 
 /**
