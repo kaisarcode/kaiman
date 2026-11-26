@@ -22,6 +22,7 @@
 #ifdef _WIN32
 #include <shellapi.h>
 #elif defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
 #include <crt_externs.h>
 #include <errno.h>
 #include <spawn.h>
@@ -467,6 +468,87 @@ static int bridge_quit(kc_gui_state_t *state) {
 }
 
 /**
+ * Detect an explicit preference for light appearance.
+ * @return 1 for an explicit light preference, otherwise 0.
+ */
+static int theme_light(void) {
+#ifdef _WIN32
+    DWORD value = 0;
+    DWORD size = sizeof(value);
+
+    return RegGetValueA(HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "AppsUseLightTheme", RRF_RT_REG_DWORD, NULL, &value, &size) ==
+        ERROR_SUCCESS && value == 1;
+#elif defined(__APPLE__)
+    CFPropertyListRef value = CFPreferencesCopyValue(
+        CFSTR("AppleInterfaceStyle"), kCFPreferencesAnyApplication,
+        kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    int light = value != NULL &&
+        CFGetTypeID(value) == CFStringGetTypeID() &&
+        CFEqual(value, CFSTR("Light"));
+
+    if (value != NULL) CFRelease(value);
+    return light;
+#else
+    GDBusConnection *connection;
+    GVariant *reply = NULL;
+    GVariant *value;
+    GVariant *inner;
+    GSettingsSchemaSource *source;
+    GSettingsSchema *schema;
+    GSettings *settings;
+    int light = 0;
+    int known = 0;
+
+    connection = g_bus_get_sync(G_BUS_TYPE_SESSION, NULL, NULL);
+    if (connection != NULL) {
+        reply = g_dbus_connection_call_sync(connection,
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Settings", "Read",
+            g_variant_new("(ss)", "org.freedesktop.appearance",
+                "color-scheme"), G_VARIANT_TYPE("(v)"),
+            G_DBUS_CALL_FLAGS_NONE, 1000, NULL, NULL);
+        g_object_unref(connection);
+    }
+    if (reply != NULL) {
+        value = g_variant_get_child_value(reply, 0);
+        while (g_variant_is_of_type(value, G_VARIANT_TYPE_VARIANT)) {
+            inner = g_variant_get_variant(value);
+            g_variant_unref(value);
+            value = inner;
+        }
+        if (g_variant_is_of_type(value, G_VARIANT_TYPE_UINT32)) {
+            known = 1;
+            light = g_variant_get_uint32(value) == 2;
+        }
+        g_variant_unref(value);
+        g_variant_unref(reply);
+    }
+    if (known) return light;
+    source = g_settings_schema_source_get_default();
+    if (source == NULL) return 0;
+    schema = g_settings_schema_source_lookup(source,
+        "org.gnome.desktop.interface", TRUE);
+    if (schema == NULL) return 0;
+    if (g_settings_schema_has_key(schema, "color-scheme")) {
+        settings = g_settings_new_full(schema, NULL, NULL);
+        value = g_settings_get_user_value(settings, "color-scheme");
+        if (value != NULL) {
+            light = g_variant_is_of_type(value, G_VARIANT_TYPE_STRING) &&
+                strcmp(g_variant_get_string(value, NULL),
+                    "prefer-light") == 0;
+            g_variant_unref(value);
+        }
+        g_object_unref(settings);
+    }
+    g_settings_schema_unref(schema);
+    return light;
+#endif
+}
+
+/**
  * Open the project documentation using the system browser.
  * @return KC_KAIMAN_OK or an error status.
  */
@@ -525,6 +607,9 @@ static int bridge_callback(kc_wvw_t *wvw, const char *method,
     *out_result_json = "null";
     if (method == NULL) return KC_WVW_ERROR;
     if (strcmp(method, "state") == 0) result = bridge_state();
+    else if (strcmp(method, "theme") == 0) {
+        result = set_result(theme_light() ? "\"light\"" : "\"dark\"");
+    }
     else if (strcmp(method, "addService") == 0) {
         result = bridge_add_service(params_json);
     } else if (strcmp(method, "setService") == 0) {
@@ -670,7 +755,7 @@ static void gui_signal(int signum) {
  * @return 0 on success, 1 on failure.
  */
 int kc_kaiman_gui_run(void) {
-    static const char *const methods[] = {"state", "addService",
+    static const char *const methods[] = {"state", "theme", "addService",
         "setService", "removeService", "setListen", "startGateway",
         "stopGateway", "openDocumentation", "quit"};
     kc_gui_state_t state;

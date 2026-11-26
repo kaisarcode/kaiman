@@ -409,6 +409,12 @@ async function run() {
     clearForm();
     setBusy(true);
     try {
+        document.documentElement.setAttribute("data-theme",
+            await bridge("theme") === "light" ? "light" : "dark");
+    } catch (error) {
+        document.documentElement.setAttribute("data-theme", "dark");
+    }
+    try {
         await refresh();
         showMessage("", "info");
     } catch (error) {

@@ -52,10 +52,11 @@ if(KC_GUI AND NOT KC_LIBRARY_ONLY)
     list(APPEND KC_DEPENDENCIES wvw)
     list(APPEND KC_GUI_SOURCES src/gui.c)
     if(WIN32)
-        list(APPEND KC_GUI_LINK_LIBS ole32 uuid user32 gdi32 shell32)
+        list(APPEND KC_GUI_LINK_LIBS ole32 uuid user32 gdi32 shell32 advapi32)
     elseif(APPLE)
         list(APPEND KC_GUI_LINK_LIBS "-framework WebKit"
-            "-framework Cocoa" "-framework Foundation")
+            "-framework Cocoa" "-framework Foundation"
+            "-framework CoreFoundation")
     else()
         find_package(PkgConfig REQUIRED)
         pkg_check_modules(KC_WVW REQUIRED IMPORTED_TARGET
