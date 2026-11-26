@@ -78,8 +78,7 @@
                 </div>
                 <div class="form-actions">
                     <button class="button button-primary" id="save-service" type="submit">Save</button>
-                    <button class="button button-danger" id="remove-service" type="button" hidden>Remove</button>
-                    <button class="button" id="cancel-edit" type="button" hidden>Cancel</button>
+                    <button class="button" id="remove-service" type="button" hidden>Remove</button>
                 </div>
             </form>
         </section>
@@ -105,6 +104,16 @@
         </section>
     </main>
     <footer class="status" id="status" role="status" data-kind="info">Ready</footer>
+    <dialog class="dialog" id="remove-dialog" aria-labelledby="remove-heading" aria-describedby="remove-message">
+        <form method="dialog">
+            <h2 id="remove-heading">Remove service?</h2>
+            <p id="remove-message"></p>
+            <div class="dialog-actions">
+                <button class="button" type="submit" value="cancel" autofocus>Cancel</button>
+                <button class="button button-primary" type="submit" value="remove">Remove</button>
+            </div>
+        </form>
+    </dialog>
     <script src="app.js"></script>
 </body>
 </html>

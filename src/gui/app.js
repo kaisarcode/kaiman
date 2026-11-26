@@ -138,7 +138,6 @@ function clearForm() {
     byId("field-name").readOnly = false;
     byId("editor-heading").textContent = "Add service";
     byId("remove-service").hidden = true;
-    byId("cancel-edit").hidden = true;
     for (index = 0; index < items.length; index++) {
         items[index].removeAttribute("aria-current");
     }
@@ -163,7 +162,6 @@ function fillForm(service) {
     byId("field-name").readOnly = true;
     byId("editor-heading").textContent = "Edit " + service.name;
     byId("remove-service").hidden = false;
-    byId("cancel-edit").hidden = false;
     for (index = 0; index < items.length; index++) {
         if (items[index].getAttribute("data-name") === service.name) {
             items[index].setAttribute("aria-current", "true");
@@ -229,7 +227,7 @@ async function refresh() {
  * @param method Bridge method name.
  * @param params Parameters to pass.
  * @param message Message shown after success.
- * @return A promise resolving after the command completes.
+ * @return A promise resolving to true on success or false on failure.
  */
 async function perform(method, params, message) {
     setBusy(true);
@@ -241,8 +239,10 @@ async function perform(method, params, message) {
         }
         showMessage(message, "success");
         await refresh();
+        return true;
     } catch (error) {
         showMessage(describeError(error), "error");
+        return false;
     } finally {
         setBusy(false);
     }
@@ -281,15 +281,6 @@ function handleNew() {
 }
 
 /**
- * Return to the new service form.
- * @return void
- */
-function handleCancel() {
-    clearForm();
-    showMessage("Edit cancelled.", "info");
-}
-
-/**
  * Add or update the service in the form.
  * @param event Submit event.
  * @return A promise resolving after the save completes.
@@ -306,18 +297,34 @@ async function handleSubmit(event) {
 }
 
 /**
- * Remove the service in the form.
- * @return A promise resolving after the removal completes.
+ * Open the confirmation dialog for the selected service.
+ * @return void
  */
-async function handleRemove() {
+function handleRemove() {
     var name = byId("field-name").value.trim();
+    var dialog = byId("remove-dialog");
 
     if (name === "") {
         showMessage("Select a service to remove.", "error");
         return;
     }
-    await perform("removeService", { name: name }, "Service removed.");
-    clearForm();
+    byId("remove-message").textContent = "Remove service " + name + "?";
+    dialog.returnValue = "";
+    dialog.showModal();
+}
+
+/**
+ * Remove the selected service only after explicit confirmation.
+ * @return A promise resolving after the removal completes.
+ */
+async function handleRemoveConfirm() {
+    var dialog = byId("remove-dialog");
+    var name = byId("field-name").value.trim();
+
+    if (dialog.returnValue !== "remove" || name === "") return;
+    if (await perform("removeService", { name: name }, "Service removed.")) {
+        clearForm();
+    }
 }
 
 /**
@@ -353,9 +360,9 @@ async function handleListen() {
 function bindEvents() {
     byId("service-list").addEventListener("click", handleServiceSelect);
     byId("new-service").addEventListener("click", handleNew);
-    byId("cancel-edit").addEventListener("click", handleCancel);
     byId("service-form").addEventListener("submit", handleSubmit);
     byId("remove-service").addEventListener("click", handleRemove);
+    byId("remove-dialog").addEventListener("close", handleRemoveConfirm);
     byId("toggle-gateway").addEventListener("click", handleToggle);
     byId("apply-listen").addEventListener("click", handleListen);
 }
