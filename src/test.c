@@ -722,6 +722,22 @@ static int integration(const char *path) {
         result = 1;
     }
     free(response);
+    response = test_request("GET", "/v1/providers", NULL, &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "{\"data\":[") == NULL ||
+        strstr(response, "{\"name\":\"mock\",\"slug\":\"mock\"}") == NULL ||
+        strstr(response, "{\"name\":\"ollama\",\"slug\":\"ollama\"}") == NULL ||
+        strstr(response, "{\"name\":\"gemini\",\"slug\":\"gemini\"}") == NULL ||
+        strstr(response, "{\"name\":\"bedrock\",\"slug\":\"bedrock\"}") == NULL ||
+        strstr(response, "\"slug\":\"openai\"") != NULL ||
+        strstr(response, "\"slug\":\"opencode\"") != NULL ||
+        strstr(response, "127.0.0.1:49382") != NULL ||
+        strstr(response, "\"adapter\"") != NULL ||
+        strstr(response, "\"keyring\"") != NULL) {
+        fprintf(stderr, "providers endpoint failed\n");
+        result = 1;
+    }
+    free(response);
     response = test_request("GET", "/v1/models", NULL, &size);
     if (response == NULL || strstr(response, "\"id\":\"mock/model-a\"") == NULL ||
         strstr(response, "\"id\":\"mock/model-b\"") == NULL ||

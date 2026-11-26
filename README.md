@@ -135,8 +135,15 @@ The gateway listens on `127.0.0.1:49380` by default. Change `listen` in the
 | Method | Path | Behavior |
 | --- | --- | --- |
 | `GET` | `/health` | Returns `{"status":"ok"}`. |
+| `GET` | `/v1/providers` | Lists configured providers. |
 | `GET` | `/v1/models` | Discovers models from configured providers. |
 | `POST` | `/v1/chat/completions` | Selects a service by `model` and forwards the chat request. |
+
+The provider list returns `{"data":[{"name":"local","slug":"local"}]}` for a
+service named `local`. The `name` and `slug` are the configured service name.
+Only configured services are listed, without upstream requests or credentials.
+The `slug` can be passed to the model catalog as a provider filter. An empty
+configuration returns `{"data":[]}`.
 
 A chat request uses a model identifier returned by the model catalog and a
 `messages` array. Each identifier has the form `service/model`. Model selection
@@ -144,6 +151,7 @@ happens per request, and the gateway removes the service prefix before sending
 the request upstream. Multiple services can expose the same upstream model.
 
 ```sh
+curl http://127.0.0.1:49380/v1/providers
 curl http://127.0.0.1:49380/v1/models
 curl "http://127.0.0.1:49380/v1/models?provider=openai"
 curl "http://127.0.0.1:49380/v1/models?provider=openai,ollama"

@@ -3811,6 +3811,40 @@ static int catalog_selected(const char *filter, const char *name) {
 }
 
 /**
+ * Build the list of configured providers without contacting upstream servers.
+ * @param kaiman Open manager.
+ * @param out Receives owned JSON text.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int gateway_providers(const kc_kaiman_t *kaiman, char **out) {
+    kc_buffer_t *buffer = NULL;
+    size_t index;
+    int status;
+
+    *out = NULL;
+    status = kc_buffer_open(&buffer);
+    if (status != KC_KAIMAN_OK) return status;
+    status = kc_buffer_text(buffer, "{\"data\":[");
+    for (index = 0U; status == KC_KAIMAN_OK && index < kaiman->count; index++) {
+        const char *name = kaiman->services[index]->name;
+
+        status = kc_buffer_text(buffer, index == 0U ?
+            "{\"name\":" : ",{\"name\":");
+        if (status == KC_KAIMAN_OK) status = json_write_text(buffer, name);
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, ",\"slug\":");
+        if (status == KC_KAIMAN_OK) status = json_write_text(buffer, name);
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}");
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "]}");
+    if (status == KC_KAIMAN_OK) {
+        *out = kc_util_strdup(kc_buffer_value(buffer));
+        if (*out == NULL) status = KC_KAIMAN_ENOMEM;
+    }
+    kc_buffer_close(buffer);
+    return status;
+}
+
+/**
  * Build the unified model catalog from currently reachable services.
  * @param gateway Open gateway.
  * @param filter Selected service names, or NULL for all.
@@ -3893,6 +3927,20 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
         strcmp(request->path, "/health") == 0) {
         (void)gateway_json(gateway, connection->peer, 200,
             "{\"status\":\"ok\"}");
+        return;
+    }
+    if (strcmp(request->method, "GET") == 0 &&
+        strcmp(request->path, "/v1/providers") == 0) {
+        char *providers = NULL;
+        int status = gateway_providers(gateway->manager, &providers);
+
+        if (status != KC_KAIMAN_OK) {
+            (void)gateway_failure(gateway, connection->peer, 500,
+                "could not list configured providers");
+        } else {
+            (void)gateway_json(gateway, connection->peer, 200, providers);
+            kc_kaiman_free(providers);
+        }
         return;
     }
     if (strcmp(request->method, "GET") == 0 &&
