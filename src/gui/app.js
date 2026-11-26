@@ -9,6 +9,7 @@
 
 var currentState = { services: [] };
 var themePending = false;
+var editedAuthentication = null;
 
 /**
  * Find one element by its document identifier.
@@ -131,22 +132,21 @@ function renderAuthentication() {
     var scheme = byId("field-scheme").value;
     var authenticated = scheme === "bearer" || scheme === "basic";
     var basic = scheme === "basic";
-    var command = byId("field-source").value === "token-command";
     var credential = basic ? "Password" : "API key";
+    var saved = editedAuthentication !== null &&
+        editedAuthentication.scheme === scheme &&
+        editedAuthentication.configured;
+    var secret = byId("field-secret");
 
     byId("auth-user").hidden = !basic;
     byId("field-user").disabled = !basic;
-    byId("auth-source").hidden = !authenticated;
-    byId("field-source").disabled = !authenticated;
-    byId("auth-env").hidden = !authenticated || command;
-    byId("field-env").disabled = !authenticated || command;
-    byId("auth-command").hidden = !authenticated || !command;
-    byId("field-token-command").disabled = !authenticated || !command;
-    byId("source-label").textContent = credential + " source";
-    byId("env-label").textContent = credential + " environment variable";
-    byId("command-label").textContent = credential + " command";
+    byId("field-user").required = basic;
+    byId("auth-secret").hidden = !authenticated;
+    secret.disabled = !authenticated;
+    secret.required = authenticated && !saved;
+    secret.placeholder = authenticated && saved ? "Credential configured" : "";
+    byId("secret-label").textContent = credential;
 }
-
 /**
  * Reset the service form to its add state.
  * @return void
@@ -159,7 +159,7 @@ function clearForm() {
     form.reset();
     byId("field-adapter").value = "openai";
     byId("field-scheme").value = "none";
-    byId("field-source").value = "env";
+    editedAuthentication = null;
     renderAuthentication();
     byId("field-timeout").value = "60";
     byId("field-name").readOnly = false;
@@ -176,8 +176,7 @@ function clearForm() {
  * @return void
  */
 function fillForm(service) {
-    var fields = ["adapter", "url", "model", "env", "token-command",
-        "scheme", "user"];
+    var fields = ["adapter", "url", "model", "scheme", "user"];
     var items = document.querySelectorAll(".service-item");
     var index;
 
@@ -188,8 +187,12 @@ function fillForm(service) {
     if (!byId("field-scheme").value) {
         byId("field-scheme").value = "bearer";
     }
-    byId("field-source").value = service["token-command"] ?
-        "token-command" : "env";
+    editedAuthentication = {
+        scheme: byId("field-scheme").value,
+        configured: Boolean(service.keyring || service.env ||
+            service["token-command"])
+    };
+    byId("field-secret").value = "";
     renderAuthentication();
     setValue(byId("field-timeout"), service.timeout);
     byId("field-name").readOnly = true;
@@ -223,10 +226,8 @@ function readForm() {
         params.url = byId("field-url").value;
     }
     params.model = byId("field-model").value;
-    params.env = byId("field-env").disabled ? "" :
-        byId("field-env").value;
-    params["token-command"] = byId("field-token-command").disabled ? "" :
-        byId("field-token-command").value;
+    params.secret = byId("field-secret").disabled ||
+        byId("field-secret").value === "" ? null : byId("field-secret").value;
     params.user = byId("field-user").disabled ? "" :
         byId("field-user").value;
     timeout = parseInt(byId("field-timeout").value, 10);
@@ -327,9 +328,19 @@ async function handleSubmit(event) {
 
     event.preventDefault();
     if (params === null) return;
-    await perform(editing ? "setService" : "addService", params,
-        editing ? "Service updated." : "Service added.");
-    if (!editing) clearForm();
+    if (await perform(editing ? "setService" : "addService", params,
+        editing ? "Service updated." : "Service added.")) {
+        if (!editing) clearForm();
+        else {
+            editedAuthentication = {
+                scheme: params.scheme,
+                configured: params.scheme !== "none"
+            };
+            byId("field-secret").value = "";
+            renderAuthentication();
+        }
+    }
+    params.secret = null;
 }
 
 /**
@@ -467,7 +478,6 @@ function bindEvents() {
     byId("new-service").addEventListener("click", handleNew);
     byId("service-form").addEventListener("submit", handleSubmit);
     byId("field-scheme").addEventListener("change", renderAuthentication);
-    byId("field-source").addEventListener("change", renderAuthentication);
     byId("remove-service").addEventListener("click", handleRemove);
     byId("remove-dialog").addEventListener("close", handleRemoveConfirm);
     byId("toggle-gateway").addEventListener("click", handleToggle);

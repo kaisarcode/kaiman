@@ -157,6 +157,19 @@ int kc_kaiman_service_set(kc_kaiman_service_t *service, const char *key,
     const char *value);
 
 /**
+ * Set authentication and optionally store a new secret in the system keyring.
+ * A NULL secret preserves the existing source for an unchanged scheme.
+ * The none scheme removes the existing credential and references.
+ * @param service Managed service.
+ * @param scheme Authentication scheme: none, bearer or basic.
+ * @param user Username for basic authentication, otherwise NULL or empty.
+ * @param secret New credential, or NULL to keep the current credential.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_service_authenticate(kc_kaiman_service_t *service,
+    const char *scheme, const char *user, const char *secret);
+
+/**
  * Borrow one field of a service.
  * @param service Managed service.
  * @param key Field name.

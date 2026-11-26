@@ -112,6 +112,7 @@ set(KC_SOURCES
     src/json.c
     src/util.c
     src/upstream.c
+    src/keyring.c
 )
 
 add_library(kaiman_static STATIC ${KC_SOURCES})

@@ -36,7 +36,8 @@ A service descriptor accepts a unique `name`, an `adapter` (see the adapter
 list below), an `http://` or `https://` URL, an upstream `model`, an optional
 credential reference (`env` or `token-command`), an `auth` scheme (`none`,
 `bearer` or `basic`), an optional `user`, and a `timeout` from 1 to 600
-seconds. Credentials themselves are never stored.
+seconds. Direct credentials are stored separately in the system credential store
+using `kc_kaiman_service_authenticate`.
 
 ## JavaScript projection
 
@@ -178,8 +179,13 @@ constraints still apply.
 
 The default file is `$XDG_CONFIG_HOME/kaiman/services.ini`, or
 `$HOME/.config/kaiman/services.ini`. It is written atomically with restricted
-permissions. Tokens are never stored: a service keeps an environment variable
-name or a command that prints the token.
+permissions. The GUI stores API keys and passwords using the system credential
+store: Credential Manager on Windows, Keychain on Apple platforms, and Secret
+Service through the optional system libsecret on desktop Linux. The configuration
+contains only a credential reference. If secure storage is unavailable, saving
+a new credential fails. Existing environment and command sources remain usable
+through the library and CLI. Editing a service without entering a new secret
+preserves its existing credential when the authentication scheme is unchanged.
 
 ```ini
 [gateway]

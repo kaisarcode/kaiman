@@ -10,6 +10,7 @@
 #include "libkaiman.h"
 
 #include "json.h"
+#include "keyring.h"
 #include "libhttp.h"
 #include "libnetl.h"
 #include "upstream.h"
@@ -57,6 +58,7 @@ struct kc_kaiman_service {
     char *token_command;
     char *auth_scheme;
     char *auth_user;
+    char *keyring;
     int timeout;
 };
 
@@ -320,6 +322,7 @@ static void service_fields_clear(kc_kaiman_service_t *service) {
     free(service->token_command);
     free(service->auth_scheme);
     free(service->auth_user);
+    free(service->keyring);
     service->name = NULL;
     service->adapter = NULL;
     service->base_url = NULL;
@@ -328,6 +331,7 @@ static void service_fields_clear(kc_kaiman_service_t *service) {
     service->token_command = NULL;
     service->auth_scheme = NULL;
     service->auth_user = NULL;
+    service->keyring = NULL;
 }
 
 /**
@@ -454,6 +458,9 @@ static int persist(kc_kaiman_t *kaiman) {
             service->auth_scheme != NULL ? service->auth_scheme : "bearer");
         fprintf(file, "user=%s\n",
             service->auth_user != NULL ? service->auth_user : "");
+        if (service->keyring != NULL && *service->keyring != '\0') {
+            fprintf(file, "keyring=%s\n", service->keyring);
+        }
         fprintf(file, "timeout=%d\n\n", service->timeout);
     }
     if (fclose(file) != 0) {
@@ -547,6 +554,13 @@ static int apply_field(kc_kaiman_service_t *service, const char *key,
         target = &service->auth_scheme;
     } else if (strcmp(key, "user") == 0 || strcmp(key, "auth_user") == 0) {
         target = &service->auth_user;
+    } else if (strcmp(key, "keyring") == 0) {
+        if (*value != '\0' && (strlen(value) != 32U ||
+            strspn(value, "0123456789abcdef") != 32U)) {
+            set_error(kaiman, "invalid credential reference");
+            return KC_KAIMAN_EINVAL;
+        }
+        target = &service->keyring;
     } else if (strcmp(key, "timeout") == 0) {
         parsed = strtol(value, &end, 10);
         if (end == value || *end != '\0' || parsed < 1 || parsed > 600) {
@@ -967,9 +981,122 @@ int kc_kaiman_service_set(kc_kaiman_service_t *service, const char *key,
     int status;
 
     if (!service_valid(service)) return KC_KAIMAN_EINVAL;
+    if (key != NULL && strcmp(key, "keyring") == 0) return KC_KAIMAN_EINVAL;
     status = apply_field(service, key, value);
     if (status != KC_KAIMAN_OK) return status;
     return persist(service->owner);
+}
+
+/**
+ * Set authentication and optionally store a new secret in the system keyring.
+ * A NULL secret preserves the existing source for an unchanged scheme.
+ * The none scheme removes the existing credential and references.
+ * @param service Managed service.
+ * @param scheme Authentication scheme: none, bearer or basic.
+ * @param user Username for basic authentication, otherwise NULL or empty.
+ * @param secret New credential, or NULL to keep the current credential.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_service_authenticate(kc_kaiman_service_t *service,
+    const char *scheme, const char *user, const char *secret) {
+    char id[33];
+    char *next_scheme = NULL;
+    char *next_user = NULL;
+    char *next_keyring = NULL;
+    char *old_scheme;
+    char *old_user;
+    char *old_keyring;
+    char *old_env;
+    char *old_command;
+    int none;
+    int replace_source;
+    int status;
+
+    if (!service_valid(service) || scheme == NULL) return KC_KAIMAN_EINVAL;
+    none = strcmp(scheme, "none") == 0;
+    if ((!none && strcmp(scheme, "bearer") != 0 &&
+        strcmp(scheme, "basic") != 0) ||
+        (strcmp(scheme, "basic") == 0 &&
+            (user == NULL || *user == '\0' || strchr(user, ':') != NULL ||
+                !valid_value(user))) ||
+        (secret != NULL && (*secret == '\0' || !valid_value(secret))) ||
+        (none && secret != NULL)) {
+        set_error(service->owner, "invalid authentication");
+        return KC_KAIMAN_EINVAL;
+    }
+    if (!none && secret == NULL &&
+        (service->auth_scheme == NULL ||
+            strcmp(service->auth_scheme, scheme) != 0 ||
+            ((service->keyring == NULL || *service->keyring == '\0') &&
+                (service->api_key_env == NULL || *service->api_key_env == '\0') &&
+                (service->token_command == NULL || *service->token_command == '\0')))) {
+        set_error(service->owner, "a credential is required");
+        return KC_KAIMAN_EINVAL;
+    }
+    replace_source = none || secret != NULL;
+    next_scheme = copy_text(scheme);
+    next_user = copy_text(strcmp(scheme, "basic") == 0 ? user : "");
+    if (next_scheme == NULL || next_user == NULL) {
+        status = KC_KAIMAN_ENOMEM;
+        goto fail;
+    }
+    if (secret != NULL) {
+        status = kc_keyring_id(id);
+        if (status != KC_KAIMAN_OK) goto fail;
+        next_keyring = copy_text(id);
+        if (next_keyring == NULL) {
+            status = KC_KAIMAN_ENOMEM;
+            goto fail;
+        }
+        status = kc_keyring_store(next_keyring, secret);
+        if (status != KC_KAIMAN_OK) {
+            set_error(service->owner, "system credential storage is unavailable");
+            goto fail;
+        }
+    }
+    old_scheme = service->auth_scheme;
+    old_user = service->auth_user;
+    old_keyring = service->keyring;
+    old_env = service->api_key_env;
+    old_command = service->token_command;
+    service->auth_scheme = next_scheme;
+    service->auth_user = next_user;
+    if (replace_source) {
+        service->keyring = next_keyring;
+        service->api_key_env = NULL;
+        service->token_command = NULL;
+    }
+    status = persist(service->owner);
+    if (status != KC_KAIMAN_OK) {
+        service->auth_scheme = old_scheme;
+        service->auth_user = old_user;
+        service->keyring = old_keyring;
+        service->api_key_env = old_env;
+        service->token_command = old_command;
+        if (next_keyring != NULL) (void)kc_keyring_remove(next_keyring);
+        goto fail;
+    }
+    free(old_scheme);
+    free(old_user);
+    if (replace_source) {
+        if (old_keyring != NULL && *old_keyring != '\0') {
+            status = kc_keyring_remove(old_keyring);
+            if (status != KC_KAIMAN_OK) {
+                set_error(service->owner,
+                    "authentication saved; previous credential could not be removed");
+            }
+        }
+        free(old_keyring);
+        free(old_env);
+        free(old_command);
+    }
+    return status;
+
+fail:
+    free(next_scheme);
+    free(next_user);
+    free(next_keyring);
+    return status;
 }
 
 /**
@@ -987,6 +1114,7 @@ const char *kc_kaiman_service_get(const kc_kaiman_service_t *service,
         return service->base_url;
     }
     if (strcmp(key, "model") == 0) return service->model;
+    if (strcmp(key, "keyring") == 0) return service->keyring;
     if (strcmp(key, "env") == 0 || strcmp(key, "api_key_env") == 0) {
         return service->api_key_env;
     }
@@ -1022,6 +1150,13 @@ int kc_kaiman_service_remove(kc_kaiman_service_t *service) {
     int status;
 
     if (!service_valid(service)) return KC_KAIMAN_EINVAL;
+    if (service->keyring != NULL && *service->keyring != '\0') {
+        status = kc_keyring_remove(service->keyring);
+        if (status != KC_KAIMAN_OK) {
+            set_error(service->owner, "could not remove the stored credential");
+            return status;
+        }
+    }
     service_retire(service->owner, service);
     status = persist(service->owner);
     return status;
@@ -1347,11 +1482,17 @@ static int service_authorization(const kc_kaiman_service_t *service,
         const char *value = getenv(service->api_key_env);
         if (value == NULL || *value == '\0') status = KC_KAIMAN_EINVAL;
         else token = kc_util_strdup(value);
+    } else if (service->keyring != NULL && *service->keyring != '\0') {
+        status = kc_keyring_read(service->keyring, &token);
     } else {
         status = KC_KAIMAN_EINVAL;
     }
     if (status != KC_KAIMAN_OK) return status;
     if (token == NULL) return KC_KAIMAN_ENOMEM;
+    if (*token == '\0' || !valid_value(token)) {
+        free(token);
+        return KC_KAIMAN_EINVAL;
+    }
 
     if (strcmp(scheme, "bearer") == 0) {
         kc_buffer_t *buffer = NULL;

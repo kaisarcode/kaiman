@@ -122,7 +122,7 @@ static int append_json_string(kc_buffer_t *buffer, const char *text) {
  */
 static int append_services(kc_buffer_t *buffer, kc_kaiman_t *kaiman) {
     static const char *const keys[] = {"name", "adapter", "url", "model",
-        "env", "token-command", "scheme", "user"};
+        "env", "token-command", "scheme", "user", "keyring"};
     kc_kaiman_service_t **services = NULL;
     size_t count = 0U;
     size_t index;
@@ -193,6 +193,10 @@ static int apply_service_params(kc_kaiman_service_t *service,
     const kc_json_value_t *params) {
     static const char *const keys[] = {"adapter", "url", "model", "env",
         "token-command", "scheme", "user"};
+    const char *scheme = require_string(params, "scheme");
+    const char *user = require_string(params, "user");
+    const char *secret = require_string(params, "secret");
+    int direct = kc_json_member(params, "secret") != NULL;
     kc_json_value_t *value;
     char timeout[32];
     double number;
@@ -200,11 +204,16 @@ static int apply_service_params(kc_kaiman_service_t *service,
     int result;
 
     for (index = 0U; index < sizeof(keys) / sizeof(keys[0]); index++) {
+        if (direct && index >= 3U) continue;
         value = kc_json_member(params, keys[index]);
         if (value == NULL) continue;
         if (kc_json_type(value) != KC_JSON_STRING) return KC_KAIMAN_EINVAL;
         result = kc_kaiman_service_set(service, keys[index],
             kc_json_text(value));
+        if (result != KC_KAIMAN_OK) return result;
+    }
+    if (direct) {
+        result = kc_kaiman_service_authenticate(service, scheme, user, secret);
         if (result != KC_KAIMAN_OK) return result;
     }
     value = kc_json_member(params, "timeout");
@@ -315,7 +324,10 @@ static int bridge_add_service(const char *params_json) {
         result = apply_service_params(service, params);
     }
     if (result == KC_KAIMAN_OK) result = set_success();
-    else (void)set_error(kaiman, result, NULL);
+    else {
+        (void)set_error(kaiman, result, NULL);
+        if (service != NULL) (void)kc_kaiman_service_remove(service);
+    }
 
 done:
     kc_kaiman_close(kaiman);

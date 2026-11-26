@@ -572,6 +572,28 @@ static int checks(const char *path) {
     }
     printf("[8/" KC_TEST_TOTAL "] [PASS] json_escape: special characters and control bytes\n");
 
+    if (kc_kaiman_get_service(kaiman, "missing-auth-test", &found) ==
+        KC_KAIMAN_NOT_FOUND) {
+        memset(&invalid, 0, sizeof(invalid));
+        invalid.name = "missing-auth-test";
+        invalid.auth_scheme = "none";
+        if (kc_kaiman_add_service(kaiman, &invalid, &found) != KC_KAIMAN_OK ||
+            kc_kaiman_service_authenticate(found, "bearer", NULL, NULL) !=
+                KC_KAIMAN_EINVAL ||
+            kc_kaiman_service_set(found, "env", "KAIMAN_TEST_KEY") !=
+                KC_KAIMAN_OK ||
+            kc_kaiman_service_set(found, "scheme", "bearer") != KC_KAIMAN_OK ||
+            kc_kaiman_service_authenticate(found, "bearer", NULL, NULL) !=
+                KC_KAIMAN_OK ||
+            kc_kaiman_service_authenticate(found, "none", NULL, NULL) !=
+                KC_KAIMAN_OK ||
+            kc_kaiman_service_get(found, "env") != NULL ||
+            kc_kaiman_service_remove(found) != KC_KAIMAN_OK) {
+            fprintf(stderr, "authentication reference lifecycle failed\n");
+            result = 1;
+        }
+    }
+
     if (kc_kaiman_version() == NULL || *kc_kaiman_version() == '\0') {
         fprintf(stderr, "missing version\n");
         result = 1;

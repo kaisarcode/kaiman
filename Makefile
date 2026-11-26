@@ -96,7 +96,7 @@ windows/$(1):
 	@$(MAKE) -s --no-print-directory build-target TARGET=windows/$(1) \
 		TARGET_CC="$(2)" TARGET_EXT=dll TARGET_CFLAGS="" \
 		TARGET_CLI_EXT=.exe TARGET_SHARED="" \
-		TARGET_SYSTEM_LIBS="-lws2_32 -lcrypt32 -lbcrypt -lm"
+		TARGET_SYSTEM_LIBS="-lws2_32 -lcrypt32 -lbcrypt -ladvapi32 -lm"
 endef
 
 $(eval $(call windows_target,x86_64,x86_64-w64-mingw32-gcc))
