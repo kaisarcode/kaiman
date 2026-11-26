@@ -145,10 +145,17 @@ the request upstream. Multiple services can expose the same upstream model.
 
 ```sh
 curl http://127.0.0.1:49380/v1/models
+curl "http://127.0.0.1:49380/v1/models?provider=openai"
+curl "http://127.0.0.1:49380/v1/models?provider=openai,ollama"
 ```
 
+The optional `provider` query parameter selects configured service names, not
+adapter types. Only selected providers are queried. Comma-separated and repeated
+parameters are supported. Unmatched names return no models; malformed filters
+return 400.
+
 The catalog is refreshed from providers on each request. Unreachable providers
-are omitted when other catalogs succeed; if every configured provider fails,
+are omitted when other catalogs succeed; if every selected provider fails,
 the gateway returns 502. A provider catalog does not guarantee that every
 listed model supports chat or that account permissions allow inference.
 

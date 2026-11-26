@@ -3709,17 +3709,122 @@ static int catalog_service(const kc_kaiman_service_t *service,
 }
 
 /**
+ * Decode a single hexadecimal URL escape digit.
+ * @param byte ASCII character.
+ * @return Digit value, or -1 on failure.
+ */
+static int catalog_hex(unsigned char byte) {
+    if (byte >= '0' && byte <= '9') return byte - '0';
+    if (byte >= 'a' && byte <= 'f') return byte - 'a' + 10;
+    if (byte >= 'A' && byte <= 'F') return byte - 'A' + 10;
+    return -1;
+}
+
+/**
+ * Parse optional provider filters into a comma-separated service list.
+ * @param query Borrowed HTTP query string, or NULL.
+ * @param out Receives owned filter text, or NULL when absent.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int catalog_filter(const char *query, char **out) {
+    const char *start = query;
+    char *filter;
+    size_t size = 0U;
+    size_t name_size = 0U;
+
+    *out = NULL;
+    if (query == NULL || *query == '\0') return KC_KAIMAN_OK;
+    filter = (char *)malloc(strlen(query) + 1U);
+    if (filter == NULL) return KC_KAIMAN_ENOMEM;
+    while (*start != '\0') {
+        const char *end = strchr(start, '&');
+        const char *cursor;
+
+        if (end == NULL) end = start + strlen(start);
+        if ((size_t)(end - start) >= 8U &&
+            strncmp(start, "provider", 8U) == 0 &&
+            (start + 8U == end || start[8] == '=')) {
+            if (start + 8U == end) goto invalid;
+            if (size != 0U) filter[size++] = ',';
+            name_size = 0U;
+            for (cursor = start + 9U; cursor < end; cursor++) {
+                unsigned char byte = (unsigned char)*cursor;
+
+                if (byte == '%') {
+                    int high;
+                    int low;
+
+                    if (end - cursor < 3) goto invalid;
+                    high = catalog_hex((unsigned char)cursor[1]);
+                    low = catalog_hex((unsigned char)cursor[2]);
+                    if (high < 0 || low < 0) goto invalid;
+                    byte = (unsigned char)(high * 16 + low);
+                    cursor += 2;
+                }
+                if (byte == ',') {
+                    if (name_size == 0U) goto invalid;
+                    name_size = 0U;
+                } else {
+                    if (!isalnum(byte) && byte != '_' && byte != '-' &&
+                        byte != '.') goto invalid;
+                    name_size++;
+                }
+                filter[size++] = (char)byte;
+            }
+            if (name_size == 0U) goto invalid;
+        }
+        start = *end == '\0' ? end : end + 1U;
+    }
+    if (size == 0U) {
+        free(filter);
+        return KC_KAIMAN_OK;
+    }
+    filter[size] = '\0';
+    *out = filter;
+    return KC_KAIMAN_OK;
+
+invalid:
+    free(filter);
+    return KC_KAIMAN_EINVAL;
+}
+
+/**
+ * Check whether a service is selected by an optional catalog filter.
+ * @param filter Comma-separated service names, or NULL for all.
+ * @param name Configured service name.
+ * @return 1 when selected, otherwise 0.
+ */
+static int catalog_selected(const char *filter, const char *name) {
+    const char *start = filter;
+    size_t length = strlen(name);
+
+    if (filter == NULL) return 1;
+    while (*start != '\0') {
+        const char *end = strchr(start, ',');
+        size_t size = end != NULL ? (size_t)(end - start) : strlen(start);
+
+        if (size == length && strncmp(start, name, length) == 0) return 1;
+        if (end == NULL) break;
+        start = end + 1U;
+    }
+    return 0;
+}
+
+/**
  * Build the unified model catalog from currently reachable services.
  * @param gateway Open gateway.
+ * @param filter Selected service names, or NULL for all.
  * @param out Receives owned OpenAI-compatible JSON.
  * @return KC_KAIMAN_OK or an error status.
  */
-static int gateway_models(kc_kaiman_gateway_t *gateway, char **out) {
+static int gateway_models(kc_kaiman_gateway_t *gateway, const char *filter,
+    char **out) {
     kc_buffer_t *buffer = NULL;
     kc_kaiman_t *kaiman = gateway->manager;
     size_t index;
     size_t count = 0U;
     size_t available = 0U;
+    size_t selected = 0U;
     int status;
 
     *out = NULL;
@@ -3729,8 +3834,11 @@ static int gateway_models(kc_kaiman_gateway_t *gateway, char **out) {
     for (index = 0U; status == KC_KAIMAN_OK && index < kaiman->count; index++) {
         size_t before = buffer->size;
         size_t before_count = count;
-        int discovered = catalog_service(kaiman->services[index], buffer, &count);
+        int discovered;
 
+        if (!catalog_selected(filter, kaiman->services[index]->name)) continue;
+        selected++;
+        discovered = catalog_service(kaiman->services[index], buffer, &count);
         if (discovered == KC_KAIMAN_OK) {
             available++;
         } else {
@@ -3739,7 +3847,7 @@ static int gateway_models(kc_kaiman_gateway_t *gateway, char **out) {
             count = before_count;
         }
     }
-    if (status == KC_KAIMAN_OK && kaiman->count != 0U && available == 0U) {
+    if (status == KC_KAIMAN_OK && selected != 0U && available == 0U) {
         status = KC_KAIMAN_EHTTP;
     }
     if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "]}");
@@ -3789,7 +3897,18 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
     }
     if (strcmp(request->method, "GET") == 0 &&
         strcmp(request->path, "/v1/models") == 0) {
-        int status = gateway_models(gateway, &models);
+        char *filter = NULL;
+        int status = catalog_filter(request->query, &filter);
+
+        if (status == KC_KAIMAN_EINVAL) {
+            (void)gateway_failure(gateway, connection->peer, 400,
+                "invalid provider filter");
+            return;
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = gateway_models(gateway, filter, &models);
+        }
+        free(filter);
         if (status != KC_KAIMAN_OK) {
             (void)gateway_failure(gateway, connection->peer,
                 status == KC_KAIMAN_EHTTP ? 502 : 500,

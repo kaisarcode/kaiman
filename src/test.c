@@ -735,6 +735,49 @@ static int integration(const char *path) {
         result = 1;
     }
     free(response);
+    response = test_request("GET", "/v1/models?provider=mock", NULL, &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "\"id\":\"mock/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"mock/model-b\"") == NULL ||
+        strstr(response, "\"id\":\"ollama/") != NULL ||
+        strstr(response, "\"id\":\"anthropic/") != NULL) {
+        fprintf(stderr, "single provider filter failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("GET", "/v1/models?provider=mock%2Collama",
+        NULL, &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "\"id\":\"mock/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"ollama/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"gemini/") != NULL) {
+        fprintf(stderr, "multiple provider filter failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("GET", "/v1/models?provider=mock&provider=ollama",
+        NULL, &size);
+    if (response == NULL || strstr(response, "\"id\":\"mock/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"ollama/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"gemini/") != NULL) {
+        fprintf(stderr, "repeated provider filter failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("GET", "/v1/models?provider=missing", NULL, &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "\"data\":[]") == NULL) {
+        fprintf(stderr, "unknown provider filter failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("GET", "/v1/models?provider=mock,,ollama",
+        NULL, &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 400") == NULL) {
+        fprintf(stderr, "invalid provider filter accepted\n");
+        result = 1;
+    }
+    free(response);
     response = test_request("POST", "/v1/chat/completions", request_body,
         &size);
     if (response == NULL || strstr(response, "\"model\":\"mock/model-a\"") == NULL ||
