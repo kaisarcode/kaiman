@@ -48,7 +48,7 @@
         --muted: #526154;
         --border: #ced6ce;
         --separator: #dbe1da;
-        --primary: #527b15;
+        --primary: #466c12;
         --primary-foreground: #ffffff;
         --focus: #527b15;
         --selection: #e2edcf;
@@ -59,7 +59,7 @@
         --error: #a33232;
         --info: #526154;
         --primary-pressed: #36570a;
-        --primary-hover: #42680e;
+        --primary-hover: #3d5e0d;
         --control-border: #788479;
     }
 }
