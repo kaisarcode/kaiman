@@ -147,6 +147,7 @@ function renderAuthentication() {
     secret.placeholder = authenticated && saved ? "Credential configured" : "";
     byId("secret-label").textContent = credential;
 }
+
 /**
  * Reset the service form to its add state.
  * @return void
