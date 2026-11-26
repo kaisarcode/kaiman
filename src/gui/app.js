@@ -377,7 +377,7 @@ async function run() {
     setBusy(true);
     try {
         await refresh();
-        showMessage("Ready.", "info");
+        showMessage("", "info");
     } catch (error) {
         showMessage(describeError(error), "error");
     } finally {
