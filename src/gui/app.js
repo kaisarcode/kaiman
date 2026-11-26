@@ -210,7 +210,7 @@ async function refresh() {
     var toggle = byId("toggle-gateway");
 
     currentState = result;
-    toggle.textContent = result.running ? "Stop gateway" : "Start gateway";
+    toggle.textContent = result.running ? "Stop" : "Start";
     toggle.classList.toggle("button-primary", !result.running);
     toggle.classList.toggle("button-danger", result.running);
     renderServices(result.services || []);
