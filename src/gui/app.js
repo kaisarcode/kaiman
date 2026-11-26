@@ -8,6 +8,7 @@
  */
 
 var currentState = { services: [] };
+var themePending = false;
 
 /**
  * Find one element by its document identifier.
@@ -354,6 +355,44 @@ async function handleListen() {
 }
 
 /**
+ * Apply the selected appearance and update the switch icon.
+ * @param theme Theme name.
+ * @return void
+ */
+function applyTheme(theme) {
+    var light = theme === "light";
+    var button = byId("toggle-theme");
+    var label = light ? "Switch to dark theme" : "Switch to light theme";
+
+    document.documentElement.setAttribute("data-theme",
+        light ? "light" : "dark");
+    byId("theme-sun").hidden = light;
+    byId("theme-moon").hidden = !light;
+    button.setAttribute("aria-label", label);
+    button.title = label;
+}
+
+/**
+ * Toggle the appearance and persist the manual preference.
+ * @return A promise resolving after the preference is saved.
+ */
+async function handleTheme() {
+    var theme = document.documentElement.getAttribute("data-theme") ===
+        "light" ? "dark" : "light";
+
+    if (themePending) return;
+    themePending = true;
+    applyTheme(theme);
+    try {
+        await bridge("setTheme", { theme: theme });
+    } catch (error) {
+        showMessage(describeError(error), "error");
+    } finally {
+        themePending = false;
+    }
+}
+
+/**
  * Open the application information dialog.
  * @return void
  */
@@ -396,6 +435,7 @@ function bindEvents() {
     byId("remove-dialog").addEventListener("close", handleRemoveConfirm);
     byId("toggle-gateway").addEventListener("click", handleToggle);
     byId("apply-listen").addEventListener("click", handleListen);
+    byId("toggle-theme").addEventListener("click", handleTheme);
     byId("open-about").addEventListener("click", handleAbout);
     byId("documentation").addEventListener("click", handleDocumentation);
 }
@@ -409,10 +449,9 @@ async function run() {
     clearForm();
     setBusy(true);
     try {
-        document.documentElement.setAttribute("data-theme",
-            await bridge("theme") === "light" ? "light" : "dark");
+        applyTheme(await bridge("theme"));
     } catch (error) {
-        document.documentElement.setAttribute("data-theme", "dark");
+        applyTheme("dark");
     }
     try {
         await refresh();

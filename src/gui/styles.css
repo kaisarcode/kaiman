@@ -553,10 +553,6 @@ select:focus-visible {
     text-align: right;
 }
 
-.status .icon-button {
-    margin-left: auto;
-}
-
 #status[data-kind="success"] {
     color: var(--success);
 }

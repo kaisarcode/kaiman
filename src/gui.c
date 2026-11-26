@@ -549,6 +549,105 @@ static int theme_light(void) {
 }
 
 /**
+ * Resolve the GUI preference file beside the service configuration.
+ * @return Owned path, or NULL on failure.
+ */
+static char *theme_path(void) {
+    kc_kaiman_t *kaiman = NULL;
+    kc_buffer_t *buffer = NULL;
+    const char *path;
+    const char *separator;
+    const char *windows_separator;
+    char *result = NULL;
+    int status;
+
+    if (kc_kaiman_open(&kaiman, NULL) != KC_KAIMAN_OK) return NULL;
+    path = kc_kaiman_path(kaiman);
+    separator = strrchr(path, '/');
+    windows_separator = strrchr(path, '\\');
+    if (windows_separator != NULL &&
+        (separator == NULL || windows_separator > separator)) {
+        separator = windows_separator;
+    }
+    status = kc_buffer_open(&buffer);
+    if (status == KC_KAIMAN_OK) {
+        if (separator == NULL) {
+            status = kc_buffer_text(buffer, "gui.theme");
+        } else {
+            status = kc_buffer_format(buffer, "%.*sgui.theme",
+                (int)(separator - path + 1), path);
+        }
+    }
+    if (status == KC_KAIMAN_OK) {
+        result = kc_util_strdup(kc_buffer_value(buffer));
+    }
+    kc_buffer_close(buffer);
+    kc_kaiman_close(kaiman);
+    return result;
+}
+
+/**
+ * Read the saved appearance or the system preference.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int bridge_theme(void) {
+    char *path = theme_path();
+    char *value = NULL;
+    size_t size = 0U;
+    int light;
+
+    if (path != NULL) value = kc_util_read_file(path, &size);
+    if (value != NULL && size == 6U && memcmp(value, "light\n", 6U) == 0) {
+        light = 1;
+    } else if (value != NULL && size == 5U &&
+        memcmp(value, "dark\n", 5U) == 0) {
+        light = 0;
+    } else {
+        light = theme_light();
+    }
+    kc_kaiman_free(value);
+    kc_kaiman_free(path);
+    return set_result(light ? "\"light\"" : "\"dark\"");
+}
+
+/**
+ * Persist a manually selected appearance.
+ * @param params_json Serialized parameters.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int bridge_set_theme(const char *params_json) {
+    kc_json_value_t *params = NULL;
+    const char *theme;
+    const char *value;
+    char *path = NULL;
+    int result;
+
+    result = parse_params(params_json, &params);
+    if (result != KC_KAIMAN_OK) return set_error(NULL, result,
+        "Expected a theme preference.");
+    theme = require_string(params, "theme");
+    if (theme == NULL ||
+        (strcmp(theme, "dark") != 0 && strcmp(theme, "light") != 0)) {
+        result = set_error(NULL, KC_KAIMAN_EINVAL,
+            "Invalid theme preference.");
+        goto done;
+    }
+    value = strcmp(theme, "light") == 0 ? "light\n" : "dark\n";
+    path = theme_path();
+    if (path == NULL || !kc_util_write_private(path, value, strlen(value))) {
+        result = set_error(NULL, KC_KAIMAN_EIO,
+            "Unable to save theme preference.");
+        goto done;
+    }
+    result = set_success();
+
+done:
+    kc_kaiman_free(path);
+    kc_json_free(params);
+    return result;
+}
+
+/**
  * Open the project documentation using the system browser.
  * @return KC_KAIMAN_OK or an error status.
  */
@@ -608,9 +707,10 @@ static int bridge_callback(kc_wvw_t *wvw, const char *method,
     if (method == NULL) return KC_WVW_ERROR;
     if (strcmp(method, "state") == 0) result = bridge_state();
     else if (strcmp(method, "theme") == 0) {
-        result = set_result(theme_light() ? "\"light\"" : "\"dark\"");
-    }
-    else if (strcmp(method, "addService") == 0) {
+        result = bridge_theme();
+    } else if (strcmp(method, "setTheme") == 0) {
+        result = bridge_set_theme(params_json);
+    } else if (strcmp(method, "addService") == 0) {
         result = bridge_add_service(params_json);
     } else if (strcmp(method, "setService") == 0) {
         result = bridge_set_service(params_json);
@@ -755,9 +855,9 @@ static void gui_signal(int signum) {
  * @return 0 on success, 1 on failure.
  */
 int kc_kaiman_gui_run(void) {
-    static const char *const methods[] = {"state", "theme", "addService",
-        "setService", "removeService", "setListen", "startGateway",
-        "stopGateway", "openDocumentation", "quit"};
+    static const char *const methods[] = {"state", "theme", "setTheme",
+        "addService", "setService", "removeService", "setListen",
+        "startGateway", "stopGateway", "openDocumentation", "quit"};
     kc_gui_state_t state;
     kc_wvw_t *wvw = NULL;
     kc_wvw_options_t options;
