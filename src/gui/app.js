@@ -79,6 +79,9 @@ function setBusy(busy) {
     for (index = 0; index < buttons.length; index++) {
         buttons[index].disabled = busy;
     }
+    if (typeof currentState.running !== "boolean") {
+        byId("toggle-gateway").disabled = true;
+    }
 }
 
 /**
@@ -206,8 +209,12 @@ function readForm() {
 async function refresh() {
     var result = await bridge("state");
     var state = byId("gateway-state");
+    var toggle = byId("toggle-gateway");
 
     currentState = result;
+    toggle.textContent = result.running ? "Stop gateway" : "Start gateway";
+    toggle.classList.toggle("button-primary", !result.running);
+    toggle.classList.toggle("button-danger", result.running);
     renderServices(result.services || []);
     state.textContent = result.running ? "Running" : "Stopped";
     state.className = result.running ? "state state-running" :
@@ -231,6 +238,9 @@ async function perform(method, params, message) {
     showMessage("Working...", "info");
     try {
         await bridge(method, params);
+        if (method === "startGateway" || method === "stopGateway") {
+            currentState.running = undefined;
+        }
         showMessage(message, "success");
         await refresh();
     } catch (error) {
@@ -313,19 +323,15 @@ async function handleRemove() {
 }
 
 /**
- * Start the detached gateway.
+ * Start or stop the gateway according to its reported state.
  * @return A promise resolving after the command completes.
  */
-async function handleStart() {
-    await perform("startGateway", null, "Gateway started.");
-}
-
-/**
- * Stop the detached gateway.
- * @return A promise resolving after the command completes.
- */
-async function handleStop() {
-    await perform("stopGateway", null, "Gateway stopped.");
+async function handleToggle() {
+    if (currentState.running === true) {
+        await perform("stopGateway", null, "Gateway stopped.");
+    } else if (currentState.running === false) {
+        await perform("startGateway", null, "Gateway started.");
+    }
 }
 
 /**
@@ -365,8 +371,7 @@ function bindEvents() {
     byId("cancel-edit").addEventListener("click", handleCancel);
     byId("service-form").addEventListener("submit", handleSubmit);
     byId("remove-service").addEventListener("click", handleRemove);
-    byId("start-gateway").addEventListener("click", handleStart);
-    byId("stop-gateway").addEventListener("click", handleStop);
+    byId("toggle-gateway").addEventListener("click", handleToggle);
     byId("apply-listen").addEventListener("click", handleListen);
     byId("quit").addEventListener("click", handleQuit);
 }
@@ -378,11 +383,14 @@ function bindEvents() {
 async function run() {
     bindEvents();
     clearForm();
+    setBusy(true);
     try {
         await refresh();
         showMessage("Ready.", "info");
     } catch (error) {
         showMessage(describeError(error), "error");
+    } finally {
+        setBusy(false);
     }
 }
 
