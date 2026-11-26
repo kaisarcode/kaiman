@@ -467,7 +467,6 @@ static int checks(const char *path) {
     descriptor.name = "local-opencode";
     descriptor.adapter = "opencode";
     descriptor.base_url = "http://127.0.0.1:49374";
-    descriptor.model = "opencode/big-pickle";
     descriptor.api_key_env = "OPENCODE_TOKEN";
     descriptor.token_command = "opencode service get password";
     descriptor.auth_scheme = "basic";
@@ -481,8 +480,8 @@ static int checks(const char *path) {
         status = kc_kaiman_get_service(kaiman, "local-opencode", &found);
     }
     if (status != KC_KAIMAN_OK || count != 1U || found != service ||
-        strcmp(kc_kaiman_service_get(service, "model"),
-            "opencode/big-pickle") != 0 ||
+        strcmp(kc_kaiman_service_get(service, "url"),
+            "http://127.0.0.1:49374") != 0 ||
         kc_kaiman_service_timeout(service) != 90) {
         fprintf(stderr, "add and get failed\n");
         result = 1;
@@ -504,9 +503,9 @@ static int checks(const char *path) {
     printf("[2/" KC_TEST_TOTAL "] [PASS] add_and_get: managed service fields, identity and "
         "descriptor validation\n");
 
-    status = kc_kaiman_service_set(service, "model", "opencode/gemini");
+    status = kc_kaiman_service_set(service, "url", "http://127.0.0.1:49375");
     if (status != KC_KAIMAN_OK || strcmp(kc_kaiman_service_get(service,
-        "model"), "opencode/gemini") != 0) {
+        "url"), "http://127.0.0.1:49375") != 0) {
         fprintf(stderr, "service set failed\n");
         result = 1;
     }
@@ -529,8 +528,8 @@ static int checks(const char *path) {
     status = kc_kaiman_get_service(reloaded, "local-opencode", &found);
     if (status != KC_KAIMAN_OK ||
         strcmp(kc_kaiman_address(reloaded), "127.0.0.1:50000") != 0 ||
-        strcmp(kc_kaiman_service_get(found, "model"),
-            "opencode/gemini") != 0 ||
+        strcmp(kc_kaiman_service_get(found, "url"),
+            "http://127.0.0.1:49375") != 0 ||
         strcmp(kc_kaiman_service_get(found, "token-command"),
             "opencode service get password") != 0) {
         fprintf(stderr, "reload failed\n");
@@ -541,7 +540,8 @@ static int checks(const char *path) {
     status = kc_kaiman_service_remove(found);
     status = kc_kaiman_get_service(reloaded, "local-opencode", &service);
     if (status != KC_KAIMAN_NOT_FOUND ||
-        kc_kaiman_service_set(found, "model", "x") != KC_KAIMAN_EINVAL) {
+        kc_kaiman_service_set(found, "url", "http://127.0.0.1:1") !=
+            KC_KAIMAN_EINVAL) {
         fprintf(stderr, "remove lifecycle failed\n");
         result = 1;
     }
@@ -664,7 +664,6 @@ static int integration(const char *path) {
     descriptor.name = "mock";
     descriptor.adapter = "openai";
     descriptor.base_url = "http://127.0.0.1:49382/openai";
-    descriptor.model = NULL;
     descriptor.auth_scheme = "none";
     descriptor.timeout = 5;
     if (kc_kaiman_add_service(kaiman, &descriptor, &service) !=
@@ -682,7 +681,6 @@ static int integration(const char *path) {
         descriptor.name = adapters[index];
         descriptor.adapter = adapters[index];
         descriptor.base_url = base;
-        descriptor.model = NULL;
         if (kc_kaiman_add_service(kaiman, &descriptor, &service) != KC_KAIMAN_OK) {
             fprintf(stderr, "native adapter setup failed: %s\n", adapters[index]);
             goto done;
@@ -1072,7 +1070,7 @@ static int cli_commands(void) {
     }
     {
         char *arguments[] = { TEST_CLI, "add", "demo", "adapter=openai",
-            "url=http://127.0.0.1:49374", "model=demo/model",
+            "url=http://127.0.0.1:49374",
             "scheme=none", "timeout=5", NULL };
         if (!test_cli_check(arguments, 0, NULL, NULL)) {
             fprintf(stderr, "CLI add failed\n");
@@ -1088,7 +1086,7 @@ static int cli_commands(void) {
     }
     {
         char *arguments[] = { TEST_CLI, "edit", "demo",
-            "model=demo/updated", NULL };
+            "url=http://127.0.0.1:49375", NULL };
         if (!test_cli_check(arguments, 0, NULL, NULL)) {
             fprintf(stderr, "CLI edit failed\n");
             goto done;
@@ -1096,7 +1094,7 @@ static int cli_commands(void) {
     }
     {
         char *arguments[] = { TEST_CLI, "list", NULL };
-        if (!test_cli_check(arguments, 0, "demo/updated", NULL)) {
+        if (!test_cli_check(arguments, 0, "http://127.0.0.1:49375", NULL)) {
             fprintf(stderr, "CLI edited list failed\n");
             goto done;
         }
@@ -1158,7 +1156,7 @@ static int cli_commands(void) {
     }
     {
         char *arguments[] = { TEST_CLI, "edit", "demo",
-            "model=missing", NULL };
+            "url=http://127.0.0.1:1", NULL };
         if (!test_cli_check(arguments, 1, NULL, NULL)) {
             fprintf(stderr, "CLI invalid edit succeeded\n");
             goto done;

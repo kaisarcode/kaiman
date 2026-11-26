@@ -226,18 +226,18 @@ function manager(initial) {
             }
             const fields = [
                 descriptor.name, descriptor.adapter, descriptor.url,
-                descriptor.model, descriptor.apiKeyEnv,
+                descriptor.apiKeyEnv,
                 descriptor.tokenCommand, descriptor.authScheme,
                 descriptor.authUser
             ];
             const pointers = fields.map(value =>
                 value === undefined || value === null ? 0 : cstring(value));
-            const data = allocate(36);
+            const data = allocate(32);
             const out = allocate(4);
             try {
                 pointers.forEach((ptr, index) =>
                     wasm.setValue(data + (index * 4), ptr, "i32"));
-                wasm.setValue(data + 32,
+                wasm.setValue(data + 28,
                     descriptor.timeout === undefined ? 0 : descriptor.timeout,
                     "i32");
                 check(wasm._kc_kaiman_add_service(valid(), data, out));

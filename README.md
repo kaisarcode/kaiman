@@ -151,8 +151,6 @@ The catalog is refreshed from providers on each request. Unreachable providers
 are omitted when other catalogs succeed; if every configured provider fails,
 the gateway returns 502. A provider catalog does not guarantee that every
 listed model supports chat or that account permissions allow inference.
-Legacy `model=` settings remain readable for compatibility and are ignored by
-the gateway.
 
 `stream:true` returns a chunked SSE response with `data:` frames and a final
 `data: [DONE]` frame.

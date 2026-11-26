@@ -40,7 +40,6 @@ typedef struct {
     const char *name;
     const char *adapter;
     const char *base_url;
-    const char *model;
     const char *api_key_env;
     const char *token_command;
     const char *auth_scheme;

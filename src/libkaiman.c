@@ -53,7 +53,6 @@ struct kc_kaiman_service {
     char *name;
     char *adapter;
     char *base_url;
-    char *model;
     char *api_key_env;
     char *token_command;
     char *auth_scheme;
@@ -317,7 +316,6 @@ static void service_fields_clear(kc_kaiman_service_t *service) {
     free(service->name);
     free(service->adapter);
     free(service->base_url);
-    free(service->model);
     free(service->api_key_env);
     free(service->token_command);
     free(service->auth_scheme);
@@ -326,7 +324,6 @@ static void service_fields_clear(kc_kaiman_service_t *service) {
     service->name = NULL;
     service->adapter = NULL;
     service->base_url = NULL;
-    service->model = NULL;
     service->api_key_env = NULL;
     service->token_command = NULL;
     service->auth_scheme = NULL;
@@ -448,8 +445,6 @@ static int persist(kc_kaiman_t *kaiman) {
             service->adapter != NULL ? service->adapter : "");
         fprintf(file, "url=%s\n",
             service->base_url != NULL ? service->base_url : "");
-        fprintf(file, "model=%s\n",
-            service->model != NULL ? service->model : "");
         fprintf(file, "env=%s\n",
             service->api_key_env != NULL ? service->api_key_env : "");
         fprintf(file, "token-command=%s\n",
@@ -538,8 +533,6 @@ static int apply_field(kc_kaiman_service_t *service, const char *key,
             return KC_KAIMAN_EINVAL;
         }
         target = &service->base_url;
-    } else if (strcmp(key, "model") == 0) {
-        target = &service->model;
     } else if (strcmp(key, "env") == 0 || strcmp(key, "api_key_env") == 0) {
         target = &service->api_key_env;
     } else if (strcmp(key, "token-command") == 0 ||
@@ -827,9 +820,9 @@ int kc_kaiman_get_service(const kc_kaiman_t *kaiman, const char *name,
  */
 int kc_kaiman_add_service(kc_kaiman_t *kaiman,
     const kc_kaiman_descriptor_t *descriptor, kc_kaiman_service_t **out) {
-    static const char *keys[] = {"adapter", "url", "model", "env",
+    static const char *keys[] = {"adapter", "url", "env",
         "token-command", "scheme", "user"};
-    const char *values[7];
+    const char *values[6];
     kc_kaiman_service_t *service;
     kc_kaiman_service_t **items;
     char timeout[32];
@@ -848,11 +841,10 @@ int kc_kaiman_add_service(kc_kaiman_t *kaiman,
     }
     values[0] = descriptor->adapter;
     values[1] = descriptor->base_url;
-    values[2] = descriptor->model;
-    values[3] = descriptor->api_key_env;
-    values[4] = descriptor->token_command;
-    values[5] = descriptor->auth_scheme;
-    values[6] = descriptor->auth_user;
+    values[2] = descriptor->api_key_env;
+    values[3] = descriptor->token_command;
+    values[4] = descriptor->auth_scheme;
+    values[5] = descriptor->auth_user;
     for (index = 0U; index < sizeof(keys) / sizeof(keys[0]); index++) {
         if (values[index] == NULL) continue;
         status = apply_field(service, keys[index], values[index]);
@@ -1113,7 +1105,6 @@ const char *kc_kaiman_service_get(const kc_kaiman_service_t *service,
     if (strcmp(key, "url") == 0 || strcmp(key, "base_url") == 0) {
         return service->base_url;
     }
-    if (strcmp(key, "model") == 0) return service->model;
     if (strcmp(key, "keyring") == 0) return service->keyring;
     if (strcmp(key, "env") == 0 || strcmp(key, "api_key_env") == 0) {
         return service->api_key_env;
