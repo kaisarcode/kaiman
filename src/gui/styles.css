@@ -1,25 +1,28 @@
 :root {
     color-scheme: dark;
-    --bg: #191614;
-    --panel: #211d1a;
-    --surface: #2a2521;
-    --raised: #342d27;
-    --hover: #3d352e;
-    --foreground: #f3ece4;
-    --secondary: #cdc1b5;
-    --muted: #a39688;
-    --border: #4a4038;
-    --separator: #392f29;
-    --primary: #c8724d;
-    --primary-foreground: #1b1410;
-    --focus: #e5b08c;
-    --selection: #4a3428;
-    --disabled: #6e6258;
-    --link: #e5b08c;
-    --success: #8fb98a;
-    --warning: #d8ad5e;
-    --error: #e08070;
-    --info: #c3b7a8;
+    --bg: #0d0f0e;
+    --panel: #141715;
+    --surface: #1c201d;
+    --raised: #252b26;
+    --hover: #2b322c;
+    --foreground: #edf1ed;
+    --secondary: #b8c1b9;
+    --muted: #89948b;
+    --border: #303831;
+    --separator: #303831;
+    --primary: #a3e635;
+    --primary-foreground: #10170a;
+    --focus: #bef264;
+    --selection: #222d18;
+    --disabled: #89948b;
+    --link: #bef264;
+    --success: #6ee7a0;
+    --warning: #eac45b;
+    --error: #e57575;
+    --info: #89948b;
+    --primary-pressed: #8bc92b;
+    --primary-hover: #bef264;
+    --control-border: #626e64;
     --space-1: 4px;
     --space-2: 8px;
     --space-3: 12px;
@@ -35,26 +38,29 @@
 @media (prefers-color-scheme: light) {
     :root {
         color-scheme: light;
-        --bg: #f5efe8;
-        --panel: #fffaf4;
-        --surface: #f0e6db;
-        --raised: #e5d7c8;
-        --hover: #dccbb9;
-        --foreground: #241d17;
-        --secondary: #4c4138;
-        --muted: #6d6055;
-        --border: #c8b8a7;
-        --separator: #ddcebe;
-        --primary: #9b4d2f;
-        --primary-foreground: #fff8f1;
-        --focus: #9b4d2f;
-        --selection: #e8cdbb;
-        --disabled: #958b80;
-        --link: #7c3d26;
-        --success: #356d45;
-        --warning: #7a5b16;
-        --error: #a13a32;
-        --info: #4c4138;
+        --bg: #f0f2ef;
+        --panel: #fafbf9;
+        --surface: #ffffff;
+        --raised: #e0e6df;
+        --hover: #e7ece5;
+        --foreground: #182019;
+        --secondary: #37463a;
+        --muted: #526154;
+        --border: #ced6ce;
+        --separator: #dbe1da;
+        --primary: #527b15;
+        --primary-foreground: #ffffff;
+        --focus: #527b15;
+        --selection: #e2edcf;
+        --disabled: #68776a;
+        --link: #42680e;
+        --success: #23643c;
+        --warning: #795609;
+        --error: #a33232;
+        --info: #526154;
+        --primary-pressed: #36570a;
+        --primary-hover: #42680e;
+        --control-border: #788479;
     }
 }
 
@@ -139,7 +145,7 @@ select:focus-visible {
 }
 
 .button {
-    border: 1px solid var(--border);
+    border: 1px solid var(--control-border);
     border-radius: var(--radius);
     background: var(--surface);
     color: var(--foreground);
@@ -163,8 +169,13 @@ select:focus-visible {
 }
 
 .button-primary:hover:not(:disabled) {
-    background: var(--focus);
-    border-color: var(--focus);
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+}
+
+.button-primary:active:not(:disabled) {
+    background: var(--primary-pressed);
+    border-color: var(--primary-pressed);
 }
 
 .button-danger {
@@ -247,6 +258,10 @@ select:focus-visible {
     background: var(--selection);
 }
 
+.service-item[aria-current="true"] .service-name {
+    color: var(--primary);
+}
+
 .service-name {
     font-weight: 600;
     overflow-wrap: anywhere;
@@ -287,7 +302,7 @@ select:focus-visible {
 .field select {
     width: 100%;
     min-height: 34px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--control-border);
     border-radius: var(--radius);
     background: var(--surface);
     padding: var(--space-1) var(--space-2);
@@ -296,6 +311,10 @@ select:focus-visible {
 .field input:focus,
 .field select:focus {
     border-color: var(--focus);
+}
+
+.panel-gateway > .field + .button {
+    margin-top: var(--space-2);
 }
 
 .form-actions {
