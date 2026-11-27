@@ -24,7 +24,7 @@ curl http://127.0.0.1:49380/v1/sessions
 ```
 
 Use `kaiman gui` to manage services and the gateway from the desktop.
-Run `install` (or `install.exe`) beside the Linux or Windows desktop build
+Run `kaiman-install` (or `kaiman-install.exe`) beside the Linux or Windows desktop build
 to copy the application to a user-selected directory and register its menu
 entry.
 

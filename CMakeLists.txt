@@ -172,7 +172,7 @@ if(KC_INSTALLER)
             "${KC_OUTPUT_DIR}/gui/${asset}" COPYONLY)
     endforeach()
     add_executable(kaiman_install src/install.c)
-    set_target_properties(kaiman_install PROPERTIES OUTPUT_NAME "install"
+    set_target_properties(kaiman_install PROPERTIES OUTPUT_NAME "kaiman-install"
         SKIP_BUILD_RPATH TRUE)
     target_compile_options(kaiman_install PRIVATE -O2 -Wall -Wextra -Werror)
     if(WIN32)
