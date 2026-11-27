@@ -280,12 +280,6 @@ build-target: check-deps
 	build_status=$$?; \
 	if [ "$$build_status" -ne 0 ]; then cat "$$build_log" >&2; fi; \
 	rm -f "$build_log"; \
-	if [ "$$build_status" -eq 0 ] && [ -n "$(TARGET_GUI)" ]; then \
-		case "$$system" in \
-			Linux) rm -f "$(OUT_DIR)/install" || exit 1 ;; \
-			Windows) rm -f "$(OUT_DIR)/install.exe" || exit 1 ;; \
-		esac; \
-	fi; \
 	exit "$$build_status"
 	@echo "OK kaiman $(TARGET)"
 

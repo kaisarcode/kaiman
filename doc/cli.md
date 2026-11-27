@@ -89,7 +89,7 @@ send inference requests or modify credentials.
 
 ## Desktop installation
 
-Run `kaiman-install` on Linux or `kaiman-install.exe` on Windows from the
+Run `install` on Linux or `install.exe` on Windows from the
 desktop build.
 The installer copies the application executable, shared runtime libraries and
 GUI assets to the selected directory. The default is
