@@ -48,7 +48,6 @@ typedef struct {
     char *directory;
     char *response;
     atomic_int stop;
-    atomic_int ready;
 } kc_install_t;
 
 static const char *const install_files[] = {
@@ -461,7 +460,6 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
                 area.y + (area.height - 360) / 2);
         }
 #endif
-        atomic_store(&state->ready, 1);
     } else if (strcmp(method, "install") == 0) {
         if (params_json == NULL || kc_json_parse(params_json,
             strlen(params_json), &params) != KC_KAIMAN_OK) {
@@ -533,10 +531,10 @@ int main(void) {
     int width = 460;
     int height = 360;
     int borderless = 1;
-    int hidden = 1;
     int hide_on_close = 1;
     int result = 1;
-    double deadline;
+    const char *detail = "unable to resolve installer assets";
+    const char *native_error;
 
     state.source = install_source();
     state.directory = install_default();
@@ -544,15 +542,35 @@ int main(void) {
     url = install_url(state.source);
     icon = install_join(state.source, INSTALL_ICON);
     if (url == NULL || icon == NULL) goto done;
+    {
+        static const char *const assets[] = {"gui/install.html",
+            "gui/install.js", "gui/install.css", "gui/styles.css",
+            "gui/logo-128.png", INSTALL_ICON};
+        size_t index;
+
+        for (index = 0U; index < sizeof(assets) / sizeof(assets[0]); index++) {
+            char *path = install_join(state.source, assets[index]);
+            struct stat info;
+            int exists = path != NULL && stat(path, &info) == 0 &&
+                S_ISREG(info.st_mode);
+
+            free(path);
+            if (!exists) {
+                detail = assets[index];
+                goto done;
+            }
+        }
+    }
     options.url = url;
     options.title = "kaiman installer";
     options.icon = icon;
     options.width = &width;
     options.height = &height;
     options.borderless = &borderless;
-    options.hidden = &hidden;
+    options.background = "#141715";
     options.hide_on_close = &hide_on_close;
     options.allow_file = 1;
+    detail = "unable to open installer window";
 #ifdef _WIN32
     {
         int x = (GetSystemMetrics(SM_CXSCREEN) - width) / 2;
@@ -569,21 +587,22 @@ int main(void) {
     bridge.method_count = sizeof(methods) / sizeof(methods[0]);
     bridge.callback = install_bridge;
     bridge.userdata = &state;
-    if (kc_wvw_set_bridge_methods(wvw, &bridge) != KC_WVW_OK ||
-        kc_wvw_navigate(wvw, url) != KC_WVW_OK) goto done;
-    deadline = kc_util_seconds() + 15.0;
-    while (!atomic_load(&state.ready) && kc_util_seconds() < deadline) {
-        kc_util_sleep(25);
-    }
-    if (!atomic_load(&state.ready)) goto done;
-    if (kc_wvw_show(wvw) != KC_WVW_OK) goto done;
+    detail = "unable to initialize installer bridge";
+    if (kc_wvw_set_bridge_methods(wvw, &bridge) != KC_WVW_OK) goto done;
+    detail = "unable to load installer interface";
+    if (kc_wvw_navigate(wvw, url) != KC_WVW_OK) goto done;
     while (!atomic_load(&state.stop) && kc_wvw_is_visible(wvw) == 1) {
         kc_util_sleep(50);
     }
     result = 0;
 
 done:
-    if (result != 0) fprintf(stderr, "kaiman: unable to open installer\n");
+    if (result != 0) {
+        native_error = wvw != NULL ? kc_wvw_get_error(wvw) : NULL;
+        fprintf(stderr, "kaiman installer: %s%s%s\n", detail,
+            native_error != NULL ? ": " : "",
+            native_error != NULL ? native_error : "");
+    }
     kc_wvw_close(wvw);
     free(state.response);
     free(state.directory);

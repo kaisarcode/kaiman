@@ -13,7 +13,7 @@ var category = document.getElementById("category");
 var result = document.getElementById("install-result");
 var button = document.getElementById("install");
 var browse = document.getElementById("browse");
-var close = document.getElementById("close");
+var closeButton = document.getElementById("close");
 var installed = false;
 
 /**
@@ -55,7 +55,7 @@ async function handleInstall(event) {
     }
     button.disabled = true;
     browse.disabled = true;
-    close.disabled = true;
+    closeButton.disabled = true;
     directory.disabled = true;
     category.disabled = true;
     showResult("", false);
@@ -76,7 +76,7 @@ async function handleInstall(event) {
         showResult("Installation failed.", false);
     } finally {
         button.disabled = false;
-        close.disabled = false;
+        closeButton.disabled = false;
         browse.disabled = installed;
         directory.disabled = installed;
         category.disabled = installed;
@@ -88,7 +88,11 @@ async function handleInstall(event) {
  * @return void
  */
 function handleClose() {
-    window.NativeBridge.close();
+    if (window.NativeBridge && window.NativeBridge.close) {
+        window.NativeBridge.close();
+    } else if (window.NativeBridge && window.NativeBridge.Window) {
+        window.NativeBridge.Window.close();
+    }
 }
 
 /**
@@ -96,11 +100,20 @@ function handleClose() {
  * @return A promise resolving when ready.
  */
 async function run() {
-    directory.value = await window.NativeBridge.directory();
     form.addEventListener("submit", handleInstall);
     browse.addEventListener("click", handleBrowse);
-    close.addEventListener("click", handleClose);
-    await window.NativeBridge.ready();
+    closeButton.addEventListener("click", handleClose);
+    try {
+        if (!window.NativeBridge || !window.NativeBridge.directory) {
+            throw new Error("Native bridge unavailable.");
+        }
+        await window.NativeBridge.ready();
+        directory.value = await window.NativeBridge.directory();
+        button.disabled = false;
+        browse.disabled = false;
+    } catch (error) {
+        showResult(error.message || "Installer initialization failed.", false);
+    }
 }
 
 run();
