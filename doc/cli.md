@@ -94,8 +94,9 @@ desktop build.
 The installer copies the application executable, shared runtime libraries and
 GUI assets to the selected directory. The default is
 `~/.local/opt/kaisarcode/kaiman` on Linux and
-`%LOCALAPPDATA%\\kaisarcode\\kaiman` on Windows. The editable menu category
-defaults to Development. The menu entry launches `kaiman gui`.
+`%LOCALAPPDATA%\\kaisarcode\\kaiman` on Windows. On Linux, the menu category selector uses standard XDG identifiers and defaults
+to Programming (`Development`). On Windows, the Start Menu folder is editable
+and defaults to Development. The menu entry launches `kaiman gui`.
 Existing application configuration and credentials are left unchanged.
 The installer copies the uninstaller and its menu library into the installed
 runtime. Menu registration is supported on Linux and Windows by libmenu.

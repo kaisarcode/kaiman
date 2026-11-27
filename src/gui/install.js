@@ -126,6 +126,15 @@ async function run() {
             throw new Error("Native bridge unavailable.");
         }
         uninstall = await window.NativeBridge.mode() === "uninstall";
+        if (await window.NativeBridge.platform() === "windows") {
+            category.hidden = true;
+            category.disabled = true;
+            category = document.getElementById("category-windows");
+            category.hidden = false;
+            category.disabled = false;
+            document.querySelector("#category-field label").htmlFor =
+                category.id;
+        }
         directory.value = await window.NativeBridge.directory();
         var message = await window.NativeBridge.blocked();
         if (uninstall) {

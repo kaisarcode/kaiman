@@ -26,15 +26,20 @@
         </div>
         <div class="field" id="category-field">
             <label for="category"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Menu category</label>
-            <input id="category" type="text" value="Development" list="categories" required>
-            <datalist id="categories">
-                <option value="Development">
-                <option value="Utility">
-                <option value="Network">
-                <option value="System">
-                <option value="Office">
-                <option value="Education">
-            </datalist>
+            <select id="category" required>
+                <option value="Development" selected>Programming</option>
+                <option value="Utility">Accessories</option>
+                <option value="Education">Education</option>
+                <option value="Game">Games</option>
+                <option value="Graphics">Graphics</option>
+                <option value="Network">Internet</option>
+                <option value="Office">Office</option>
+                <option value="Science">Science</option>
+                <option value="Settings">Settings</option>
+                <option value="AudioVideo">Sound &amp; Video</option>
+                <option value="System">System Tools</option>
+            </select>
+            <input id="category-windows" type="text" value="Development" hidden disabled required>
         </div>
         <label class="purge-option" id="purge-option" hidden>
             <input id="purge" type="checkbox">

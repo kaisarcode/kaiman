@@ -371,6 +371,32 @@ static int install_registry_claim(const char *registry, const char *directory) {
 }
 
 /**
+ * Validate the platform menu category.
+ * @param category Menu category identifier or Windows folder.
+ * @return 1 when valid, otherwise 0.
+ */
+static int install_category_valid(const char *category) {
+    if (category == NULL || *category == '\0' ||
+        strcmp(category, ".") == 0 || strcmp(category, "..") == 0 ||
+        strpbrk(category, "<>:\"/\\|?*;\r\n") != NULL) return 0;
+#ifdef _WIN32
+    return 1;
+#else
+    static const char *const categories[] = {
+        "AudioVideo", "Development", "Education", "Game", "Graphics",
+        "Network", "Office", "Science", "Settings", "System", "Utility"
+    };
+    size_t index;
+
+    for (index = 0U; index < sizeof(categories) / sizeof(categories[0]);
+        index++) {
+        if (strcmp(category, categories[index]) == 0) return 1;
+    }
+    return 0;
+#endif
+}
+
+/**
  * Copy the runtime and register its native menu entry.
  * @param state Installer context.
  * @param directory Destination directory.
@@ -388,9 +414,7 @@ static const char *install_copy_runtime(kc_install_t *state, const char *directo
     size_t index;
 
     if (!install_absolute(directory)) return "Enter an absolute directory.";
-    if (category == NULL || *category == '\0' ||
-        strcmp(category, ".") == 0 || strcmp(category, "..") == 0 ||
-        strpbrk(category, "<>:\"/\\|?*;\r\n") != NULL) {
+    if (!install_category_valid(category)) {
         return "Enter a valid menu category.";
     }
     assets = install_join(directory, "gui");
@@ -991,6 +1015,12 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
 
     if (strcmp(method, "mode") == 0) {
         message = state->uninstall ? "uninstall" : "install";
+    } else if (strcmp(method, "platform") == 0) {
+#ifdef _WIN32
+        message = "windows";
+#else
+        message = "linux";
+#endif
     } else if (strcmp(method, "blocked") == 0) {
         message = state->blocked;
     } else if (strcmp(method, "directory") == 0) {
@@ -1083,8 +1113,8 @@ static char *install_url(const char *source) {
  * @return 0 after success or cancellation, otherwise 1.
  */
 int main(void) {
-    static const char *const methods[] = {"mode", "directory", "browse",
-        "blocked", "install", "uninstall", "close", "ready"};
+    static const char *const methods[] = {"mode", "platform", "directory",
+        "browse", "blocked", "install", "uninstall", "close", "ready"};
     kc_install_t state = {0};
     kc_wvw_options_t options = {0};
     kc_wvw_bridge_options_t bridge = {0};
