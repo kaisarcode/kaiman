@@ -171,7 +171,7 @@ if(KC_INSTALLER)
         configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/gui/${asset}"
             "${KC_OUTPUT_DIR}/gui/${asset}" COPYONLY)
     endforeach()
-    add_executable(kaiman_install src/install.c src/util.c src/json.c)
+    add_executable(kaiman_install src/install.c)
     set_target_properties(kaiman_install PROPERTIES OUTPUT_NAME "install"
         SKIP_BUILD_RPATH TRUE)
     target_compile_options(kaiman_install PRIVATE -O2 -Wall -Wextra -Werror)
@@ -180,6 +180,7 @@ if(KC_INSTALLER)
     else()
         target_link_options(kaiman_install PRIVATE "-Wl,-rpath,$ORIGIN")
     endif()
-    target_link_libraries(kaiman_install PRIVATE kc_wvw_shared kc_menu_shared
+    target_link_libraries(kaiman_install PRIVATE kaiman_shared
+        kc_wvw_shared kc_menu_shared
         ${KC_GUI_LINK_LIBS} ${KC_SYSTEM_LINKS})
 endif()
