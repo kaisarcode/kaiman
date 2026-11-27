@@ -62,7 +62,9 @@ typedef struct {
     atomic_int stop;
     atomic_int ready;
     atomic_int remove_runtime;
+    atomic_int apply_update;
     int uninstall;
+    int update;
 } kc_install_t;
 
 static const char *const install_files[] = {
@@ -1016,7 +1018,8 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
     int result;
 
     if (strcmp(method, "mode") == 0) {
-        message = state->uninstall ? "uninstall" : "install";
+        message = state->uninstall ? "uninstall" :
+            state->update ? "update" : "install";
     } else if (strcmp(method, "platform") == 0) {
 #ifdef _WIN32
         message = "windows";
@@ -1047,6 +1050,9 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
         }
 #endif
         atomic_store(&state->ready, 1);
+    } else if (strcmp(method, "update") == 0 && state->update &&
+        state->blocked == NULL) {
+        atomic_store(&state->apply_update, 1);
     } else if (strcmp(method, "uninstall") == 0 && state->uninstall) {
         if (params_json == NULL || kc_json_parse(params_json,
             strlen(params_json), &params) != KC_KAIMAN_OK) {
@@ -1237,11 +1243,12 @@ static void install_update_error(const char *message) {
 }
 
 /**
- * Apply a verified staged release without opening the installer interface.
+ * Apply a staged or manually launched distribution to the installation.
  * @param state Installer context.
+ * @param staged Whether the application downloaded the release.
  * @return 0 on success, otherwise 1.
  */
-static int install_update(kc_install_t *state) {
+static int install_update(kc_install_t *state, int staged) {
     char *stage = kc_update_directory();
     char *expected_path = kc_update_path(stage, "version");
     char *result_path = kc_update_path(stage, "result");
@@ -1257,16 +1264,35 @@ static int install_update(kc_install_t *state) {
     int result = 1;
     int changed = 0;
     int stopped = 0;
+    int owned = staged;
+    char *registered = NULL;
 
     if (expected_path == NULL || result_path == NULL || pid_path == NULL ||
         backup == NULL || executable == NULL) goto done;
+    if (install_registry_read(state->registry, &registered) != 1 ||
+        strcmp(registered, state->directory) != 0 ||
+        !uninstall_registered(registered)) {
+        message = "The registered installation is missing or has changed.";
+        goto done;
+    }
+    if (!staged) {
+#ifdef _WIN32
+        owned = _mkdir(stage) == 0;
+#else
+        owned = mkdir(stage, 0700) == 0;
+#endif
+        if (!owned) {
+            message = "An update is already staged.";
+            goto done;
+        }
+    }
     (void)snprintf(pid, sizeof(pid), "%llu\n", kc_util_process_id());
     if (!kc_util_write_private(pid_path, pid, strlen(pid))) goto done;
-    expected = kc_util_read_file(expected_path, &size);
+    if (staged) expected = kc_util_read_file(expected_path, &size);
     version = install_version(executable);
-    if (expected == NULL || strlen(expected) != size || version == NULL ||
-        !kc_update_newer(candidate, version) ||
-        strcmp(expected[0] == 'v' ? expected + 1 : expected, candidate) != 0) {
+    if (version == NULL || !kc_update_newer(candidate, version) ||
+        (staged && (expected == NULL || strlen(expected) != size ||
+        strcmp(expected[0] == 'v' ? expected + 1 : expected, candidate) != 0))) {
         message = "The downloaded version does not match the release.";
         goto done;
     }
@@ -1283,8 +1309,12 @@ static int install_update(kc_install_t *state) {
     result = changed ? 0 : 1;
 
 done:
-    if (changed >= 0 && result_path != NULL && message != NULL) {
-        (void)kc_util_write_private(result_path, message, strlen(message));
+    if (owned && changed >= 0 && result_path != NULL && message != NULL) {
+        if (staged || stopped) {
+            (void)kc_util_write_private(result_path, message, strlen(message));
+        } else {
+            (void)kc_update_remove(stage);
+        }
     }
     if (stopped && changed >= 0) {
         if (!kc_update_launch(executable, "gui")) {
@@ -1294,6 +1324,7 @@ done:
     } else if (message != NULL) {
         install_update_error(message);
     }
+    free(registered);
     free(version);
     free(expected);
     free(executable);
@@ -1313,7 +1344,8 @@ done:
  */
 int main(int argc, char **argv) {
     static const char *const methods[] = {"mode", "platform", "directory",
-        "browse", "blocked", "install", "uninstall", "close", "ready"};
+        "browse", "blocked", "install", "uninstall", "update", "close",
+        "ready"};
     kc_install_t state = {0};
     kc_wvw_options_t options = {0};
     kc_wvw_bridge_options_t bridge = {0};
@@ -1341,7 +1373,7 @@ int main(int argc, char **argv) {
             install_update_error("The update installer must run from its staging directory.");
         } else if (install_registry_read(state.registry, &state.directory) == 1 &&
             uninstall_registered(state.directory)) {
-            result = install_update(&state);
+            result = install_update(&state, 1);
         } else {
             install_update_error("The registered installation is missing.");
         }
@@ -1358,7 +1390,18 @@ int main(int argc, char **argv) {
         } else if (state.uninstall && registered == 0) {
             state.blocked = "Kaiman is not installed.";
         } else if (!state.uninstall && registered == 1) {
-            state.blocked = "Kaiman is already installed.";
+            char *path = install_join(state.directory, INSTALL_EXE);
+            char *version = path != NULL && uninstall_registered(
+                state.directory) ? install_version(path) : NULL;
+
+            if (version != NULL &&
+                kc_update_newer(kc_kaiman_version(), version)) {
+                state.update = 1;
+            } else {
+                state.blocked = "Kaiman is already installed.";
+            }
+            free(version);
+            free(path);
         } else if (state.uninstall &&
             !uninstall_registered(state.directory)) {
             state.blocked = "The registered installation is missing.";
@@ -1393,7 +1436,7 @@ int main(int argc, char **argv) {
     }
     options.url = url;
     options.title = state.uninstall ? "kaiman uninstaller" :
-        "kaiman installer";
+        state.update ? "kaiman update" : "kaiman installer";
     options.icon = icon;
     options.width = &width;
     options.height = &height;
@@ -1444,6 +1487,9 @@ done:
             native_error != NULL ? native_error : "");
     }
     kc_wvw_close(wvw);
+    if (atomic_load(&state.apply_update)) {
+        result = install_update(&state, 0);
+    }
     if (atomic_load(&state.remove_runtime) &&
         !uninstall_runtime(state.directory, state.registry)) {
         fprintf(stderr, "kaiman: unable to remove installed files\n");

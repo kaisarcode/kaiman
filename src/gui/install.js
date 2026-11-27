@@ -17,6 +17,7 @@ var closeButton = document.getElementById("close");
 var installed = false;
 var blocked = false;
 var uninstall = false;
+var update = false;
 var purge = document.getElementById("purge");
 
 /**
@@ -71,6 +72,9 @@ async function handleInstall(event) {
             error = await window.NativeBridge.uninstall({
                 purge: purge.checked
             });
+        } else if (update) {
+            button.textContent = "Updating...";
+            error = await window.NativeBridge.update();
         } else {
             error = await window.NativeBridge.install({
                 directory: directory.value.trim(),
@@ -79,7 +83,7 @@ async function handleInstall(event) {
         }
         if (error) {
             showResult(error, false);
-        } else if (uninstall) {
+        } else if (uninstall || update) {
             installed = true;
             await window.NativeBridge.close();
         } else {
@@ -93,11 +97,12 @@ async function handleInstall(event) {
     } finally {
         button.disabled = false;
         closeButton.disabled = false;
-        browse.disabled = installed || uninstall;
-        directory.disabled = installed || uninstall;
-        category.disabled = installed || uninstall;
+        browse.disabled = installed || uninstall || update;
+        directory.disabled = installed || uninstall || update;
+        category.disabled = installed || uninstall || update;
         purge.disabled = installed;
         if (uninstall && !installed) button.textContent = "Uninstall";
+        if (update && !installed) button.textContent = "Update";
     }
 }
 
@@ -125,7 +130,10 @@ async function run() {
         if (!window.NativeBridge || !window.NativeBridge.directory) {
             throw new Error("Native bridge unavailable.");
         }
-        uninstall = await window.NativeBridge.mode() === "uninstall";
+        var mode = await window.NativeBridge.mode();
+
+        uninstall = mode === "uninstall";
+        update = mode === "update";
         if (await window.NativeBridge.platform() === "windows") {
             category.hidden = true;
             category.disabled = true;
@@ -147,6 +155,14 @@ async function run() {
             button.classList.add("button-danger");
             button.textContent = "Uninstall";
         }
+        if (update) {
+            document.title = "kaiman update";
+            document.getElementById("category-field").hidden = true;
+            category.disabled = true;
+            browse.hidden = true;
+            directory.readOnly = true;
+            button.textContent = "Update";
+        }
         if (message) {
             blocked = true;
             directory.disabled = true;
@@ -159,7 +175,7 @@ async function run() {
             showResult(message, false);
         }
         button.disabled = false;
-        browse.disabled = uninstall || blocked;
+        browse.disabled = uninstall || update || blocked;
     } catch (error) {
         showResult(error.message || "Installer initialization failed.", false);
     }

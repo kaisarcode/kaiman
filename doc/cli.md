@@ -103,7 +103,8 @@ The installer copies the uninstaller and its menu library into the installed
 runtime. Menu registration is supported on Linux and Windows by libmenu.
 The installed directory is recorded in `install.path` under the private state
 directory (`$XDG_STATE_HOME/kaiman` or `$HOME/.local/state/kaiman`).
-Only one installation per user is allowed.
+Only one installation per user is allowed. A newer installer offers an
+Update action for the registered directory, without requiring uninstallation.
 
 ## Software updates
 
