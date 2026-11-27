@@ -8,281 +8,30 @@ OpenAI-compatible HTTP endpoint.
 The library is the product. The CLI is a thin frontend built on the same public
 API, so another application can manage services without spawning a process.
 
-## Library API
+## Quick start
 
-Include `src/libkaiman.h` and link `libkaiman`.
-
-- `kc_kaiman_open()`, `kc_kaiman_load()` and `kc_kaiman_close()` manage the
-    configuration lifetime.
-- `kc_kaiman_get_services()`, `kc_kaiman_get_service()`,
-    `kc_kaiman_add_service()`, `kc_kaiman_service_set()`,
-    `kc_kaiman_service_get()`, `kc_kaiman_service_timeout()` and
-    `kc_kaiman_service_remove()` manage saved services.
-- `kc_kaiman_listen()`, `kc_kaiman_address()` and `kc_kaiman_path()` inspect or
-    change gateway settings.
-- `kc_kaiman_gateway_open()`, `kc_kaiman_gateway_run()`,
-    `kc_kaiman_gateway_stop()`, `kc_kaiman_gateway_address()` and
-    `kc_kaiman_gateway_close()` run the HTTP gateway in the current process.
-- `kc_kaiman_start()`, `kc_kaiman_stop()` and `kc_kaiman_status()` manage the
-    detached gateway process used by the CLI.
-- `kc_kaiman_strerror()`, `kc_kaiman_error()` and `kc_kaiman_version()` report
-    status and version information.
-
-Every mutation persists immediately. Status codes follow the kclib convention:
-`KC_KAIMAN_OK`, `KC_KAIMAN_NOT_FOUND`, and negative error codes. Handles are
-borrowed. A removed service handle stays allocated but becomes invalid.
-
-A service descriptor accepts a unique `name`, an `adapter` (see the adapter
-list below), an optional `http://` or `https://` URL override, an optional
-credential reference (`env` or `token-command`), an `auth` scheme (`none`,
-`bearer` or `basic`), an optional `user`, and a `timeout` from 1 to 600
-seconds. Direct credentials are stored separately in the system credential store
-using `kc_kaiman_service_authenticate`.
-
-An omitted or empty URL selects the adapter default. `kc_kaiman_default_url()`
-returns that default; `kc_kaiman_service_url()` resolves the effective service
-URL. The `url` field contains only the explicit override. The GUI displays the
-default as a placeholder. Clearing an override restores the adapter default.
-
-## JavaScript projection
-
-`src/libkaiman.js` exposes the configuration-level API to JavaScript:
-
-```js
-import { kaiman } from "./libkaiman.js";
-
-var kmn = kaiman.open({ path: "./services.ini" });
-var services = kmn.getServices();
-var myserv1 = services[0];
-var myserv2 = kmn.getService("local-opencode");
-
-myserv1.set("name", "myserv1");
-
-const myserv3 = kmn.addService({
-  name: "openai",
-  adapter: "openai",
-  url: "https://api.openai.com/v1",
-  apiKeyEnv: "OPENAI_API_KEY"
-});
-
-kmn.listen("127.0.0.1:10000");
-myserv3.get("url");
-myserv1.remove();
-kmn.close();
-```
-
-The projection is configuration-only. No WASM artifact is produced because
-`libnetl.c` has no WASM target.
-
-## CLI
-
-```sh
-kaiman -h
-kaiman --help
-kaiman -v
-kaiman --version
-
-kaiman add local-opencode adapter=opencode \
-  url=http://127.0.0.1:49374 \
-  scheme=basic user=opencode token-command="opencode service get password"
-kaiman list
-kaiman edit local-opencode timeout=120
-kaiman remove local-opencode
-
-kaiman start
-kaiman status
-kaiman stop
-kaiman gui
-```
-
-`add` and `edit` accept the service keys `adapter`, `url`, `env`,
-`token-command`, `scheme`, `user` and `timeout`. `start` launches the gateway
-as a detached process, `status` prints its state and address, and `stop`
-terminates it. `gui` opens a native WebView manager backed by the same public
-library API. The manager lists services and provides add, edit, remove, start,
-stop, status and listen-address controls. It is available only in builds with
-`libwvw`; elsewhere the command reports that the GUI is unavailable and exits
-with status 1. On Windows, libwvw uses
-`$XDG_DATA_HOME/webview2-runtime/msedgewebview2.exe` when present, or
-`%LOCALAPPDATA%\KaisarCode\webview2-runtime\msedgewebview2.exe`, then falls back
-to the installed runtime. `KC_WEBVIEW2_DIR` overrides that default. The runtime
-is not placed in `bin/`, which is a distribution directory. See
-[WebView2 runtime requirements](lib/kaisarcode/libwvw.c/doc/webview2-runtime.md)
-for the full Windows and Wine checklist.
-
-Wine does not provide WebView2. Download the x64 Fixed Version Runtime CAB from
-the [WebView2 download page](https://developer.microsoft.com/microsoft-edge/webview2/)
-and extract it into the shared user-data directory:
-
-```sh
-runtime="${XDG_DATA_HOME:-$HOME/.local/share}/webview2-runtime"
-mkdir -p "$runtime"
-cabextract -d "$runtime" Microsoft.WebView2.FixedVersionRuntime.*.x64.cab
-fixed=$(find "$runtime" -mindepth 1 -maxdepth 1 -type d \
-    -name 'Microsoft.WebView2.FixedVersionRuntime.*' | head -n 1)
-mv "$fixed"/* "$runtime"/
-rmdir "$fixed"
-wine bin/windows/x86_64/kaiman.exe gui
-```
-
-The CAB uses a versioned subdirectory; move its contents up so
-`$runtime/msedgewebview2.exe` exists. That directory is shared with other
-projects, so nothing is copied into `bin/`.
-To keep the runtime elsewhere, set `KC_WEBVIEW2_DIR` to the Windows path Wine
-exposes, for example `Z:\home\USER\.local\share\webview2-runtime`. Adjust the
-`Z:` path when the prefix uses another drive mapping.
-
-## HTTP gateway
-
-The gateway listens on `127.0.0.1:49380` by default. Change `listen` in the
-`[gateway]` section of the configuration file to use a different host or port.
-
-| Method | Path | Behavior |
-| --- | --- | --- |
-| `GET` | `/health` | Returns `{"status":"ok"}`. |
-| `GET` | `/v1/providers` | Lists configured providers. |
-| `GET` | `/v1/models` | Discovers models from configured providers. |
-| `POST` | `/v1/chat/completions` | Selects a service by `model` and forwards the chat request. |
-
-The provider list returns `{"data":[{"name":"local","slug":"local"}]}` for a
-service named `local`. The `name` and `slug` are the configured service name.
-Only configured services are listed, without upstream requests or credentials.
-The `slug` can be passed to the model catalog as a provider filter. An empty
-configuration returns `{"data":[]}`.
-
-A chat request uses a model identifier returned by the model catalog and a
-`messages` array. Each identifier has the form `service/model`. Model selection
-happens per request, and the gateway removes the service prefix before sending
-the request upstream. Multiple services can expose the same upstream model.
-
-```sh
-curl http://127.0.0.1:49380/v1/providers
-curl http://127.0.0.1:49380/v1/models
-curl "http://127.0.0.1:49380/v1/models?provider=openai"
-curl "http://127.0.0.1:49380/v1/models?provider=openai,ollama"
-```
-
-The optional `provider` query parameter selects configured service names, not
-adapter types. Only selected providers are queried. Comma-separated and repeated
-parameters are supported. Unmatched names return no models; malformed filters
-return 400.
-
-The catalog is refreshed from providers on each request. Unreachable providers
-are omitted when other catalogs succeed; if every selected provider fails,
-the gateway returns 502. A provider catalog does not guarantee that every
-listed model supports chat or that account permissions allow inference.
-
-`stream:true` returns a chunked SSE response with `data:` frames and a final
-`data: [DONE]` frame.
-
-Invalid JSON, missing credentials or an unusable request returns `400`. An
-unknown path or unknown model returns `404`; an oversized body returns `413`;
-and an unreachable or malformed upstream returns `502`. Upstream responses with
-status `400` or higher are propagated with their status, content type and body.
-
-Supported adapters and default base URLs:
-
-| Adapter | Default URL |
-| --- | --- |
-| `openai` | `https://api.openai.com/v1` |
-| `opencode` | `http://127.0.0.1:4096` |
-| `opencode-local` | Automatically discovered |
-| `codex-local` | Not applicable (local stdio) |
-| `opencode-cloud` | `https://opencode.ai/inference` |
-| `anthropic` | `https://api.anthropic.com/v1` |
-| `gemini` | `https://generativelanguage.googleapis.com/v1beta` |
-| `responses` | `https://api.openai.com/v1` |
-| `ollama` | `http://127.0.0.1:11434` |
-| `bedrock` | `https://bedrock-runtime.us-east-1.amazonaws.com` |
-
-Override the OpenCode Server URL when its port differs (see
-`opencode service status`). Override the Bedrock URL to select another region.
-
-Local adapters require the corresponding desktop executable on PATH (or
-OpenCode in its usual per-user installation directory). The GUI hides URL and
-authentication for these adapters. Configure them with:
+Configure the installed OpenCode or Codex client:
 
 ```sh
 kaiman add local-opencode adapter=opencode-local
 kaiman add local-codex adapter=codex-local
+kaiman start
+
+curl http://127.0.0.1:49380/v1/providers
+curl http://127.0.0.1:49380/v1/models
+curl http://127.0.0.1:49380/v1/sessions
 ```
 
-OpenCode must already have a running local service and Codex must already be
-configured to use its provider. Local subprocess adapters are unavailable on
-Android and iOS. Native Windows executables are required on Windows.
+Use `kaiman gui` to manage providers and the gateway from the desktop.
 
-- `openai` forwards chat requests to an OpenAI-compatible `/chat/completions`
-    endpoint, removing the service prefix from the requested model and
-    restoring the full identifier in responses. Model discovery uses `/models`.
-- `opencode-local` (OpenCode Local) runs the installed OpenCode executable
-    to discover its running loopback service with `opencode service status`
-    and `opencode service get password`. It uses the same session and model
-    APIs as OpenCode Server without storing credentials or a URL.
-- `codex-local` (Codex Local) runs `codex app-server` over private stdin/stdout
-    pipes, checks the existing authentication with `account/read` and
-    discovers models using paginated `model/list` requests. Text requests
-    create ephemeral threads in read-only sandbox mode with no approvals.
-    Codex owns its login and token refresh. The gateway returns completed
-    assistant text, including buffered SSE for streaming clients.
-- `opencode` (OpenCode Server) uses the server HTTP API at its root URL.
-    Discovery uses `/api/model`, and model IDs use
-    `service/providerID/modelID`. Loopback servers reuse a persisted session,
-    switch to the requested model before prompting, and retain bounded
-    history. Remote servers create a temporary session, generate text and
-    remove the session. Use basic authentication if the server requires it.
-    `stream:true` emits the completed reply as SSE chunks.
-- `opencode-cloud` (OpenCode Cloud) uses the Console inference API. Set the
-    base URL to `https://opencode.ai/inference` for OpenCode Models or
-    `https://opencode.ai/inference/go` for Go, with a bearer API key.
-    Discovery uses `/v1/models`; chat uses `/openai/v1/chat/completions`.
-    Non-chat model types are omitted. Free-tier chat models can require
-    the OpenCode application.
-- `anthropic` uses the Messages API (`/messages`). Set the base URL to the API
-    version root and use `scheme=bearer` for the API key.
-- `gemini` uses `generateContent` with the model in the URL. Set the base URL
-    to the API version root and use `scheme=bearer` for the API key.
-- `responses` uses `/responses` with a bearer credential.
-- `ollama` uses `/api/chat` from the server root, normally without authentication.
-- `bedrock` uses `/model/{modelId}/converse` from the regional runtime root
-    with an Amazon Bedrock bearer API key. Discovery queries the control-plane
-    foundation model and inference profile catalogs. The credential must allow
-    those operations. AWS SigV4 is not supported.
+## Documentation
 
-The five native text adapters accept system, user and assistant text messages,
-maximum output tokens, temperature and top-p. Streaming requests emit the
-completed text and finish reason as SSE frames, rather than forwarding live
-provider events. Tool calls, multimodal input and structured output requests
-are not supported by these adapters. Upstream model-specific parameter
-constraints still apply.
-
-## Configuration
-
-The default file is `$XDG_CONFIG_HOME/kaiman/services.ini`, or
-`$HOME/.config/kaiman/services.ini`. It is written atomically with restricted
-permissions. The GUI stores API keys and passwords using the system credential
-store: Credential Manager on Windows, Keychain on Apple platforms, and Secret
-Service through the optional system libsecret on desktop Linux. The configuration
-contains only a credential reference. If secure storage is unavailable, saving
-a new credential fails. Existing environment and command sources remain usable
-through the library and CLI. Editing a service without entering a new secret
-preserves its existing credential when the authentication scheme is unchanged.
-
-```ini
-[gateway]
-listen=127.0.0.1:49380
-
-[service.local-opencode]
-adapter=opencode
-url=http://127.0.0.1:49374
-env=
-token-command=opencode service get password
-scheme=basic
-user=opencode
-timeout=60
-```
-
-Persisted OpenCode session state and the detached gateway PID live under
-`$XDG_STATE_HOME/kaiman`, or `$HOME/.local/state/kaiman`.
+- [Public API](doc/api.md) - C and JavaScript configuration interfaces
+- [CLI](doc/cli.md) - command-line and desktop usage
+- [HTTP API](doc/http-api.md) - gateway endpoints and model discovery
+- [Sessions](doc/sessions.md) - discovery, creation, forks and continuation
+- [Providers](doc/providers.md) - supported adapters and default URLs
+- [Configuration](doc/configuration.md) - persistence and credentials
 
 ## Dependencies
 
