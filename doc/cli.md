@@ -119,7 +119,9 @@ rollback, and opens the application again. The gateway can be started from the
 updated application.
 
 Updates require numeric release tags such as `v0.1.1` and a compatible ZIP
-asset with a SHA-256 digest published by GitHub.
+asset with a SHA-256 digest published by GitHub. Portable builds do not update
+the registered installation. If rollback cannot restore a runtime file,
+the backup remains in the private state directory.
 
 ## Desktop uninstallation
 

@@ -20,6 +20,7 @@ typedef struct {
     char notes[8193];
     size_t size;
     atomic_size_t received;
+    unsigned long long installer_pid;
     const char *error;
 } kc_update_t;
 
@@ -72,6 +73,19 @@ char *kc_update_path(const char *directory, const char *name);
  * @return 1 on success, otherwise 0.
  */
 int kc_update_launch(const char *executable, const char *argument);
+
+/**
+ * Check whether the staged installer exited while the GUI is running.
+ * @param update Active update context.
+ * @return 1 when exited, otherwise 0.
+ */
+int kc_update_exited(kc_update_t *update);
+
+/**
+ * Verify the current installer belongs to the staging directory.
+ * @return 1 when running from the staged release.
+ */
+int kc_update_staged(void);
 
 /**
  * Remove the owned staging tree without following symbolic links.

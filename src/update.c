@@ -32,6 +32,7 @@
 #else
 #include <dirent.h>
 #include <gio/gio.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -59,10 +60,13 @@ static int update_version(const char *text, unsigned long parts[3]) {
     if (text == NULL) return 0;
     if (*text == 'v') text++;
     for (index = 0U; index < 3U; index++) {
+        unsigned long long value;
+
         if (!isdigit((unsigned char)*text)) return 0;
         errno = 0;
-        parts[index] = strtoul(text, &end, 10);
-        if (errno != 0 || parts[index] > UINT_MAX) return 0;
+        value = strtoull(text, &end, 10);
+        if (errno != 0 || value > UINT_MAX) return 0;
+        parts[index] = (unsigned long)value;
         if (index == 2U) return *end == '\0';
         if (*end != '.') return 0;
         text = end + 1;
@@ -155,6 +159,23 @@ static int update_same(const char *left, const char *right) {
     return stat(left, &a) == 0 && stat(right, &b) == 0 &&
         a.st_dev == b.st_dev && a.st_ino == b.st_ino;
 #endif
+}
+
+/**
+ * Verify the current installer belongs to the staging directory.
+ * @return 1 when running from the staged release.
+ */
+int kc_update_staged(void) {
+    char *stage = kc_update_directory();
+    char *expected = kc_update_path(stage, "kaiman/" UPDATE_INSTALLER);
+    char *current = kc_util_executable_path();
+    int result = expected != NULL && current != NULL &&
+        update_same(expected, current);
+
+    free(current);
+    free(expected);
+    free(stage);
+    return result;
 }
 
 /**
@@ -458,7 +479,8 @@ static int update_hash(const char *path, char hex[65]) {
     if (file != NULL) fclose(file);
     if (ok) {
         for (index = 0U; index < sizeof(digest); index++) {
-            (void)snprintf(hex + index * 2U, 3U, "%02x", digest[index]);
+            (void)snprintf(hex + index * 2U, 3U, "%02x",
+                (unsigned int)digest[index]);
         }
     }
     return ok;
@@ -620,9 +642,11 @@ static int update_extract(const char *archive, const char *stage) {
  * Launch an executable with a single fixed argument.
  * @param executable Absolute executable path.
  * @param argument Argument passed to the executable.
+ * @param pid Optional installer process identifier destination.
  * @return 1 on success, otherwise 0.
  */
-int kc_update_launch(const char *executable, const char *argument) {
+static int update_launch(const char *executable, const char *argument,
+    unsigned long long *pid) {
 #ifdef _WIN32
     STARTUPINFOA startup = {0};
     PROCESS_INFORMATION process = {0};
@@ -636,6 +660,7 @@ int kc_update_launch(const char *executable, const char *argument) {
         result = CreateProcessA(executable, command->data, NULL, NULL,
             FALSE, CREATE_NO_WINDOW, NULL, NULL, &startup, &process) != 0;
         if (result) {
+            if (pid != NULL) *pid = (unsigned long long)process.dwProcessId;
             CloseHandle(process.hThread);
             CloseHandle(process.hProcess);
         }
@@ -644,9 +669,48 @@ int kc_update_launch(const char *executable, const char *argument) {
     return result;
 #else
     char *argv[] = {(char *)executable, (char *)argument, NULL};
+    GPid child = 0;
+    GSpawnFlags flags = pid != NULL ? G_SPAWN_DO_NOT_REAP_CHILD : 0;
+    int result = g_spawn_async(NULL, argv, NULL, flags, NULL, NULL,
+        pid != NULL ? &child : NULL, NULL) != 0;
 
-    return g_spawn_async(NULL, argv, NULL, 0, NULL, NULL, NULL, NULL) != 0;
+    if (result && pid != NULL) *pid = (unsigned long long)child;
+    return result;
 #endif
+}
+
+/**
+ * Launch an executable with a single fixed argument.
+ * @param executable Absolute executable path.
+ * @param argument Argument passed to the executable.
+ * @return 1 on success, otherwise 0.
+ */
+int kc_update_launch(const char *executable, const char *argument) {
+    return update_launch(executable, argument, NULL);
+}
+
+/**
+ * Check whether the staged installer exited while the GUI is running.
+ * @param update Active update context.
+ * @return 1 when exited, otherwise 0.
+ */
+int kc_update_exited(kc_update_t *update) {
+    if (update->installer_pid == 0ULL) return 1;
+#ifdef _WIN32
+    if (kc_util_pid_alive(update->installer_pid)) return 0;
+#else
+    {
+        int status;
+        pid_t pid = (pid_t)update->installer_pid;
+        pid_t result = waitpid(pid, &status, WNOHANG);
+
+        if (result == 0 || (result < 0 && errno == EINTR)) return 0;
+        if (result < 0 && kc_util_pid_alive(update->installer_pid)) return 0;
+        g_spawn_close_pid((GPid)pid);
+    }
+#endif
+    update->installer_pid = 0ULL;
+    return 1;
 }
 
 /**
@@ -748,7 +812,8 @@ int kc_update_download(kc_update_t *update) {
     if (!update_extract(archive, stage)) goto done;
     update->error = "Unable to launch the update installer.";
     if (!kc_util_write_private(expected, update->version,
-        strlen(update->version)) || !kc_update_launch(installer, "--update")) {
+        strlen(update->version)) || !update_launch(installer, "--update",
+            &update->installer_pid)) {
         goto done;
     }
     update->error = NULL;

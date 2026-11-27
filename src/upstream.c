@@ -975,7 +975,8 @@ int kc_upstream_send(const kc_upstream_request_t *request,
         ? state.content_type : "");
     response->location = state.location;
     state.location = NULL;
-    response->body = kc_util_strdup(kc_buffer_value(state.body));
+    response->body = kc_util_strdup(state.body->data != NULL ?
+        state.body->data : "");
     if (response->content_type == NULL || response->body == NULL) {
         kc_upstream_response_free(response);
         status = KC_KAIMAN_ENOMEM;

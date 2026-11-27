@@ -1161,8 +1161,16 @@ static int gui_update_start(kc_gui_update_t *job, int phase) {
 static int bridge_update_status(kc_gui_update_t *job) {
     kc_buffer_t *buffer = NULL;
     int phase = atomic_load(&job->phase);
-    int result = kc_buffer_open(&buffer);
+    int result;
 
+    if (phase == 5 && kc_update_exited(&job->release)) {
+        free(job->message);
+        job->message = kc_update_collect();
+        job->release.error = "The update installer exited without restarting Kaiman.";
+        atomic_store(&job->phase, 6);
+        phase = 6;
+    }
+    result = kc_buffer_open(&buffer);
     if (result == KC_KAIMAN_OK) {
         result = kc_buffer_format(buffer, "{\"phase\":%d", phase);
     }

@@ -1155,15 +1155,35 @@ static int install_exists(const char *directory, const char *name) {
  * @return 1 on success, 0 on safe failure, -1 when rollback fails.
  */
 static int install_replace(kc_install_t *state, const char *backup) {
-    size_t count = sizeof(install_files) / sizeof(install_files[0]);
-    unsigned char present[sizeof(install_files) / sizeof(install_files[0])] = {0};
+    const size_t required = sizeof(install_files) / sizeof(install_files[0]);
+#ifdef _WIN32
+    static const char *const optional[] = {"libgcc_s_seh-1.dll",
+        "libstdc++-6.dll", "libwinpthread-1.dll"};
+#endif
+    const char *names[sizeof(install_files) / sizeof(install_files[0])
+#ifdef _WIN32
+        + sizeof(optional) / sizeof(optional[0])
+#endif
+    ];
+    unsigned char present[sizeof(names) / sizeof(names[0])] = {0};
     char *assets = install_join(backup, "gui");
+    size_t count = required;
     size_t index;
     int result = 0;
 
     if (assets == NULL || !install_parents(assets)) goto done;
+    for (index = 0U; index < required; index++) {
+        names[index] = install_files[index];
+    }
+#ifdef _WIN32
+    for (index = 0U; index < sizeof(optional) / sizeof(optional[0]); index++) {
+        if (install_exists(state->source, optional[index])) {
+            names[count++] = optional[index];
+        }
+    }
+#endif
     for (index = 0U; index < count; index++) {
-        const char *name = install_files[index];
+        const char *name = names[index];
 
         if (!install_exists(state->source, name)) goto done;
         present[index] = (unsigned char)install_exists(state->directory, name);
@@ -1172,8 +1192,7 @@ static int install_replace(kc_install_t *state, const char *backup) {
         }
     }
     for (index = 0U; index < count; index++) {
-        if (!install_copy(state->source, state->directory,
-            install_files[index])) break;
+        if (!install_copy(state->source, state->directory, names[index])) break;
     }
     if (index == count) {
         result = 1;
@@ -1181,7 +1200,7 @@ static int install_replace(kc_install_t *state, const char *backup) {
         size_t changed;
 
         for (changed = 0U; changed <= index; changed++) {
-            const char *name = install_files[changed];
+            const char *name = names[changed];
 
             if (present[changed]) {
                 if (!install_copy(backup, state->directory, name)) result = -1;
@@ -1318,7 +1337,9 @@ int main(int argc, char **argv) {
     state.registry = install_registry_path();
     if (state.source == NULL || state.registry == NULL) goto done;
     if (!state.uninstall && argc == 2 && strcmp(argv[1], "--update") == 0) {
-        if (install_registry_read(state.registry, &state.directory) == 1 &&
+        if (!kc_update_staged()) {
+            install_update_error("The update installer must run from its staging directory.");
+        } else if (install_registry_read(state.registry, &state.directory) == 1 &&
             uninstall_registered(state.directory)) {
             result = install_update(&state);
         } else {
