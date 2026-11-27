@@ -124,11 +124,22 @@ function renderServices(services) {
 }
 
 /**
+ * Check whether the selected provider uses automatic local connection data.
+ * @return True for a local provider.
+ */
+function localProvider() {
+    var provider = byId("field-adapter").value;
+
+    return provider === "opencode-local" || provider === "codex-local";
+}
+
+/**
  * Show only the fields used by the selected authentication method.
  * @return void
  */
 function renderAuthentication() {
-    var scheme = byId("field-scheme").value;
+    var local = localProvider();
+    var scheme = local ? "none" : byId("field-scheme").value;
     var authenticated = scheme === "bearer" || scheme === "basic";
     var basic = scheme === "basic";
     var credential = basic ? "Password" : "API key";
@@ -137,6 +148,10 @@ function renderAuthentication() {
         editedAuthentication.configured;
     var secret = byId("field-secret");
 
+    byId("provider-url").hidden = local;
+    byId("field-url").disabled = local;
+    byId("auth-scheme").hidden = local;
+    byId("field-scheme").disabled = local;
     byId("auth-user").hidden = !basic;
     byId("field-user").disabled = !basic;
     byId("field-user").required = basic;
@@ -166,12 +181,17 @@ function handleProvider() {
     var provider = byId("field-adapter").value;
 
     renderDefaultUrl();
-    if (provider === "opencode-cloud") {
+    if (localProvider()) {
+        byId("field-scheme").value = "none";
+        byId("field-url").value = "";
+        byId("field-user").value = "";
+    } else if (provider === "opencode-cloud") {
         byId("field-scheme").value = "bearer";
     } else if (provider === "opencode") {
         byId("field-scheme").value = "basic";
         byId("field-user").value = "opencode";
     } else {
+        renderAuthentication();
         return;
     }
     byId("field-secret").value = "";
@@ -255,8 +275,8 @@ function readForm() {
         return null;
     }
     params.adapter = byId("field-adapter").value;
-    params.scheme = byId("field-scheme").value;
-    params.url = byId("field-url").value.trim();
+    params.scheme = localProvider() ? "none" : byId("field-scheme").value;
+    params.url = localProvider() ? "" : byId("field-url").value.trim();
     params.secret = byId("field-secret").disabled ||
         byId("field-secret").value === "" ? null : byId("field-secret").value;
     params.user = byId("field-user").disabled ? "" :

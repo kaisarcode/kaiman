@@ -41,8 +41,10 @@
                         <label for="field-adapter">Provider</label>
                         <select id="field-adapter" name="adapter">
                             <option value="openai">openai</option>
+                            <option value="opencode-local">OpenCode Local</option>
                             <option value="opencode">OpenCode Server</option>
                             <option value="opencode-cloud">OpenCode Cloud</option>
+                            <option value="codex-local">Codex Local</option>
                             <option value="anthropic">anthropic</option>
                             <option value="gemini">gemini</option>
                             <option value="responses">responses</option>
@@ -50,7 +52,7 @@
                             <option value="bedrock">bedrock</option>
                         </select>
                     </div>
-                    <div class="field">
+                    <div class="field" id="auth-scheme">
                         <label for="field-scheme">Authentication</label>
                         <select id="field-scheme" name="scheme">
                             <option value="none">None</option>
@@ -59,7 +61,7 @@
                         </select>
                     </div>
                 </div>
-                <div class="field">
+                <div class="field" id="provider-url">
                     <label for="field-url">URL</label>
                     <input id="field-url" name="url" type="text" autocomplete="off">
                 </div>

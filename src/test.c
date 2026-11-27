@@ -530,6 +530,17 @@ static int checks(const char *path) {
         fprintf(stderr, "service set failed\n");
         result = 1;
     }
+    if (kc_kaiman_service_set(service, "url", "") != KC_KAIMAN_OK ||
+        kc_kaiman_service_set(service, "adapter", "opencode-local") !=
+            KC_KAIMAN_OK || kc_kaiman_service_url(service) != NULL ||
+        kc_kaiman_service_set(service, "adapter", "codex-local") !=
+            KC_KAIMAN_OK || kc_kaiman_service_url(service) != NULL ||
+        kc_kaiman_service_set(service, "adapter", "opencode") != KC_KAIMAN_OK ||
+        kc_kaiman_service_set(service, "url", "http://127.0.0.1:49375") !=
+            KC_KAIMAN_OK) {
+        fprintf(stderr, "automatic local adapters failed\n");
+        result = 1;
+    }
     status = kc_kaiman_service_set(service, "adapter", "bad");
     if (status != KC_KAIMAN_EINVAL || kc_kaiman_error(kaiman) == NULL) {
         fprintf(stderr, "invalid adapter was accepted\n");

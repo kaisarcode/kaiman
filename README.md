@@ -186,6 +186,8 @@ Supported adapters and default base URLs:
 | --- | --- |
 | `openai` | `https://api.openai.com/v1` |
 | `opencode` | `http://127.0.0.1:4096` |
+| `opencode-local` | Automatically discovered |
+| `codex-local` | Not applicable (local stdio) |
 | `opencode-cloud` | `https://opencode.ai/inference` |
 | `anthropic` | `https://api.anthropic.com/v1` |
 | `gemini` | `https://generativelanguage.googleapis.com/v1beta` |
@@ -196,9 +198,32 @@ Supported adapters and default base URLs:
 Override the OpenCode Server URL when its port differs (see
 `opencode service status`). Override the Bedrock URL to select another region.
 
+Local adapters require the corresponding desktop executable on PATH (or
+OpenCode in its usual per-user installation directory). The GUI hides URL and
+authentication for these adapters. Configure them with:
+
+```sh
+kaiman add local-opencode adapter=opencode-local
+kaiman add local-codex adapter=codex-local
+```
+
+OpenCode must already have a running local service and Codex must already be
+configured to use its provider. Local subprocess adapters are unavailable on
+Android and iOS. Native Windows executables are required on Windows.
+
 - `openai` forwards chat requests to an OpenAI-compatible `/chat/completions`
     endpoint, removing the service prefix from the requested model and
     restoring the full identifier in responses. Model discovery uses `/models`.
+- `opencode-local` (OpenCode Local) runs the installed OpenCode executable
+    to discover its running loopback service with `opencode service status`
+    and `opencode service get password`. It uses the same session and model
+    APIs as OpenCode Server without storing credentials or a URL.
+- `codex-local` (Codex Local) runs `codex app-server` over private stdin/stdout
+    pipes, checks the existing authentication with `account/read` and
+    discovers models using paginated `model/list` requests. Text requests
+    create ephemeral threads in read-only sandbox mode with no approvals.
+    Codex owns its login and token refresh. The gateway returns completed
+    assistant text, including buffered SSE for streaming clients.
 - `opencode` (OpenCode Server) uses the server HTTP API at its root URL.
     Discovery uses `/api/model`, and model IDs use
     `service/providerID/modelID`. Loopback servers reuse a persisted session,

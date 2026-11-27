@@ -9,6 +9,7 @@
 
 #include "libkaiman.h"
 
+#include "child.h"
 #include "json.h"
 #include "keyring.h"
 #include "libhttp.h"
@@ -58,6 +59,7 @@ struct kc_kaiman_service {
     char *auth_scheme;
     char *auth_user;
     char *keyring;
+    const char *local_password;
     int timeout;
 };
 
@@ -549,7 +551,9 @@ static int apply_field(kc_kaiman_service_t *service, const char *key,
         }
         target = &service->name;
     } else if (strcmp(key, "adapter") == 0) {
-        if (kc_kaiman_default_url(value) == NULL) {
+        if (kc_kaiman_default_url(value) == NULL &&
+            strcmp(value, "opencode-local") != 0 &&
+            strcmp(value, "codex-local") != 0) {
             set_error(kaiman, "unknown adapter: %s", value);
             return KC_KAIMAN_EINVAL;
         }
@@ -1482,7 +1486,9 @@ static int service_authorization(const kc_kaiman_service_t *service,
     scheme = service->auth_scheme != NULL ? service->auth_scheme : "none";
     if (strcmp(scheme, "none") == 0) return KC_KAIMAN_OK;
 
-    if (service->token_command != NULL && *service->token_command != '\0') {
+    if (service->local_password != NULL) {
+        token = kc_util_strdup(service->local_password);
+    } else if (service->token_command != NULL && *service->token_command != '\0') {
         char line[4096];
 #ifdef _WIN32
         FILE *pipe = _popen(service->token_command, "r");
@@ -3118,6 +3124,72 @@ static int opencode_local(const char *url) {
 }
 
 /**
+ * Capture a single line from a local provider command.
+ * @param argv Executable and fixed arguments.
+ * @param timeout Maximum wait in seconds.
+ * @param out Receives owned command output.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int local_capture(char *const argv[], int timeout, char **out) {
+    kc_child_t *child = NULL;
+    double deadline = kc_util_seconds() + (double)timeout;
+    int status;
+
+    *out = NULL;
+    status = kc_child_open(&child, argv);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_child_line(child, deadline, out);
+        if (status == KC_KAIMAN_NOT_FOUND) {
+            *out = kc_util_strdup("");
+            status = *out != NULL ? KC_KAIMAN_OK : KC_KAIMAN_ENOMEM;
+        }
+    }
+    if (status == KC_KAIMAN_OK) status = kc_child_wait(child, deadline);
+    kc_child_close(child);
+    if (status != KC_KAIMAN_OK) {
+        free(*out);
+        *out = NULL;
+    }
+    return status;
+}
+
+/**
+ * Resolve OpenCode's local service into a temporary HTTP service descriptor.
+ * @param service Configured automatic service.
+ * @param resolved Receives a borrowed-field copy.
+ * @param url Receives the owned discovered URL.
+ * @param password Receives the owned server password.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int opencode_resolve(const kc_kaiman_service_t *service,
+    kc_kaiman_service_t *resolved, char **url, char **password) {
+    char *status_args[] = {"opencode", "service", "status", NULL};
+    char *password_args[] = {"opencode", "service", "get", "password", NULL};
+    int timeout = kc_kaiman_service_timeout(service);
+    int status;
+
+    *url = NULL;
+    *password = NULL;
+    status = local_capture(status_args, timeout, url);
+    if (status == KC_KAIMAN_OK &&
+        (!http_url(*url) || !opencode_local(*url))) status = KC_KAIMAN_EFORMAT;
+    if (status == KC_KAIMAN_OK) {
+        status = local_capture(password_args, timeout, password);
+    }
+    if (status != KC_KAIMAN_OK) return status;
+    *resolved = *service;
+    resolved->adapter = "opencode";
+    resolved->base_url = *url;
+    resolved->auth_scheme = **password != '\0' ? "basic" : "none";
+    resolved->auth_user = "opencode";
+    resolved->local_password = *password;
+    resolved->api_key_env = NULL;
+    resolved->token_command = NULL;
+    resolved->keyring = NULL;
+    return KC_KAIMAN_OK;
+}
+
+/**
  * Switch a persistent OpenCode session to the requested model.
  * @param service Managed service.
  * @param session Session identifier.
@@ -3513,6 +3585,392 @@ respond:
 }
 
 /**
+ * Route a request through the automatically discovered local OpenCode service.
+ * @param gateway Open gateway.
+ * @param peer Borrowed client peer.
+ * @param root Borrowed Chat Completions request.
+ * @param service Configured local service.
+ * @param model Requested upstream model.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int opencode_auto_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
+    const kc_json_value_t *root, const kc_kaiman_service_t *service,
+    const char *model) {
+    kc_kaiman_service_t resolved;
+    char *url = NULL;
+    char *password = NULL;
+    int status;
+
+    status = opencode_resolve(service, &resolved, &url, &password);
+    if (status == KC_KAIMAN_OK) {
+        status = opencode_chat(gateway, peer, root, &resolved, model);
+    } else {
+        status = gateway_failure(gateway, peer, 502,
+            "could not discover local OpenCode service");
+    }
+    free(url);
+    free(password);
+    return status;
+}
+
+/**
+ * Read one JSON-RPC message from Codex without granting tool approvals.
+ * @param child Running app-server process.
+ * @param deadline Monotonic deadline.
+ * @param out Receives an owned message.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int codex_read(kc_child_t *child, double deadline, kc_json_value_t **out) {
+    char *line = NULL;
+    int status;
+
+    *out = NULL;
+    status = kc_child_line(child, deadline, &line);
+    if (status == KC_KAIMAN_NOT_FOUND) status = KC_KAIMAN_EIO;
+    if (status == KC_KAIMAN_OK) {
+        status = kc_json_parse(line, strlen(line), out);
+    }
+    free(line);
+    if (status == KC_KAIMAN_OK &&
+        (kc_json_type(*out) != KC_JSON_OBJECT ||
+            (kc_json_member(*out, "method") != NULL &&
+                kc_json_member(*out, "id") != NULL))) {
+        status = KC_KAIMAN_EPROTO;
+    }
+    if (status != KC_KAIMAN_OK) {
+        kc_json_free(*out);
+        *out = NULL;
+    }
+    return status;
+}
+
+/**
+ * Send a JSON-RPC request and receive the matching response.
+ * @param child Running app-server process.
+ * @param id Numeric request identifier.
+ * @param method RPC method name.
+ * @param params Serialized JSON parameter object.
+ * @param deadline Monotonic deadline.
+ * @param out Receives an owned response object.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int codex_rpc(kc_child_t *child, unsigned int id, const char *method,
+    const char *params, double deadline, kc_json_value_t **out) {
+    kc_buffer_t *body = NULL;
+    int status;
+
+    *out = NULL;
+    status = kc_buffer_open(&body);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(body,
+            "{\"id\":%u,\"method\":\"%s\",\"params\":%s}", id, method, params);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_child_write(child, kc_buffer_value(body), deadline);
+    }
+    kc_buffer_close(body);
+    while (status == KC_KAIMAN_OK && kc_util_seconds() < deadline) {
+        kc_json_value_t *message = NULL;
+
+        status = codex_read(child, deadline, &message);
+        if (status != KC_KAIMAN_OK) break;
+        if (kc_json_number(kc_json_member(message, "id")) == (double)id) {
+            if (kc_json_member(message, "result") == NULL ||
+                kc_json_member(message, "error") != NULL) {
+                kc_json_free(message);
+                return KC_KAIMAN_EPROTO;
+            }
+            *out = message;
+            return KC_KAIMAN_OK;
+        }
+        kc_json_free(message);
+    }
+    return status == KC_KAIMAN_OK ? KC_KAIMAN_ETIMEOUT : status;
+}
+
+/**
+ * Initialize Codex and check the authentication it already manages.
+ * @param out Receives an owned initialized process.
+ * @param deadline Monotonic deadline.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int codex_open(kc_child_t **out, double deadline) {
+    char *argv[] = {"codex", "app-server", NULL};
+    kc_json_value_t *response = NULL;
+    const kc_json_value_t *result;
+    int status;
+
+    status = kc_child_open(out, argv);
+    if (status == KC_KAIMAN_OK) {
+        status = codex_rpc(*out, 1U, "initialize",
+            "{\"clientInfo\":{\"name\":\"kaiman\",\"title\":\"Kaiman\","
+            "\"version\":\"" KC_KAIMAN_VERSION "\"}}", deadline, &response);
+    }
+    kc_json_free(response);
+    response = NULL;
+    if (status == KC_KAIMAN_OK) {
+        status = kc_child_write(*out, "{\"method\":\"initialized\"}", deadline);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = codex_rpc(*out, 2U, "account/read",
+            "{\"refreshToken\":false}", deadline, &response);
+    }
+    if (status == KC_KAIMAN_OK) {
+        result = kc_json_member(response, "result");
+        if (kc_json_boolean(kc_json_member(result, "requiresOpenaiAuth")) &&
+            kc_json_type(kc_json_member(result, "account")) == KC_JSON_NULL) {
+            status = KC_KAIMAN_EPROTO;
+        }
+    }
+    kc_json_free(response);
+    if (status != KC_KAIMAN_OK) {
+        kc_child_close(*out);
+        *out = NULL;
+    }
+    return status;
+}
+
+/**
+ * Convert a text-only chat request to the prompt consumed by Codex.
+ * @param root Borrowed Chat Completions request.
+ * @param prompt Destination prompt buffer.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int codex_prompt(const kc_json_value_t *root, kc_buffer_t *prompt) {
+    const kc_json_value_t *messages = kc_json_member(root, "messages");
+    const kc_json_value_t *n = kc_json_member(root, "n");
+    size_t index;
+    int status = KC_KAIMAN_OK;
+
+    if (kc_json_type(messages) != KC_JSON_ARRAY ||
+        kc_json_length(messages) == 0U ||
+        kc_json_member(root, "tools") != NULL ||
+        kc_json_member(root, "functions") != NULL ||
+        kc_json_member(root, "tool_choice") != NULL ||
+        kc_json_member(root, "response_format") != NULL ||
+        (n != NULL && kc_json_number(n) != 1.0)) return KC_KAIMAN_EINVAL;
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < kc_json_length(messages); index++) {
+        const kc_json_value_t *message = kc_json_item(messages, index);
+        const char *role = kc_json_text(kc_json_member(message, "role"));
+
+        if (role == NULL || (strcmp(role, "system") != 0 &&
+            strcmp(role, "developer") != 0 && strcmp(role, "user") != 0 &&
+            strcmp(role, "assistant") != 0)) return KC_KAIMAN_EINVAL;
+        status = kc_buffer_format(prompt, "%s: ", role);
+        if (status == KC_KAIMAN_OK) {
+            status = native_content(kc_json_member(message, "content"), prompt);
+        }
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(prompt, "\n\n");
+    }
+    return status;
+}
+
+/**
+ * Read the completed assistant text for a Codex turn.
+ * @param child Running app-server process.
+ * @param thread Thread identifier.
+ * @param turn Turn identifier.
+ * @param deadline Monotonic deadline.
+ * @param reply Destination text buffer.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int codex_reply(kc_child_t *child, const char *thread, const char *turn,
+    double deadline, kc_buffer_t *reply) {
+    int status = KC_KAIMAN_OK;
+
+    while (status == KC_KAIMAN_OK && kc_util_seconds() < deadline) {
+        kc_json_value_t *event = NULL;
+        const kc_json_value_t *params;
+        const kc_json_value_t *item;
+        const kc_json_value_t *completed;
+        const char *method;
+        const char *text;
+
+        status = codex_read(child, deadline, &event);
+        if (status != KC_KAIMAN_OK) break;
+        params = kc_json_member(event, "params");
+        method = kc_json_text(kc_json_member(event, "method"));
+        if (method == NULL ||
+            !native_equals(kc_json_member(params, "threadId"), thread)) {
+            kc_json_free(event);
+            continue;
+        }
+        if (strcmp(method, "item/completed") == 0 &&
+            native_equals(kc_json_member(params, "turnId"), turn)) {
+            item = kc_json_member(params, "item");
+            if (native_equals(kc_json_member(item, "type"), "agentMessage")) {
+                text = kc_json_text(kc_json_member(item, "text"));
+                if (text != NULL) {
+                    reply->size = 0U;
+                    if (reply->data != NULL) reply->data[0] = '\0';
+                    status = kc_buffer_text(reply, text);
+                }
+            }
+        } else if (strcmp(method, "turn/completed") == 0) {
+            completed = kc_json_member(params, "turn");
+            if (native_equals(kc_json_member(completed, "id"), turn)) {
+                status = native_equals(kc_json_member(completed, "status"),
+                    "completed") && reply->size != 0U ?
+                    KC_KAIMAN_OK : KC_KAIMAN_EPROTO;
+                kc_json_free(event);
+                return status;
+            }
+        }
+        kc_json_free(event);
+    }
+    return status == KC_KAIMAN_OK ? KC_KAIMAN_ETIMEOUT : status;
+}
+
+/**
+ * Run a single ephemeral Codex turn using the selected model.
+ * @param service Configured local Codex service.
+ * @param model Requested model.
+ * @param prompt Text prompt.
+ * @param reply Destination reply.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int codex_generate(const kc_kaiman_service_t *service,
+    const char *model, const char *prompt, kc_buffer_t *reply) {
+    kc_child_t *child = NULL;
+    kc_buffer_t *params = NULL;
+    kc_json_value_t *response = NULL;
+    char *thread = NULL;
+    char *turn = NULL;
+    const char *id;
+    double deadline = kc_util_seconds() +
+        (double)kc_kaiman_service_timeout(service);
+    int status;
+
+    status = codex_open(&child, deadline);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&params);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(params, "{\"model\":");
+    }
+    if (status == KC_KAIMAN_OK) status = json_write_text(params, model);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(params,
+            ",\"ephemeral\":true,\"approvalPolicy\":\"never\","
+            "\"sandbox\":\"read-only\"}");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = codex_rpc(child, 3U, "thread/start", kc_buffer_value(params),
+            deadline, &response);
+    }
+    if (status == KC_KAIMAN_OK) {
+        id = kc_json_text(kc_json_member(kc_json_member(
+            kc_json_member(response, "result"), "thread"), "id"));
+        thread = id != NULL ? kc_util_strdup(id) : NULL;
+        if (thread == NULL) status = KC_KAIMAN_EPROTO;
+    }
+    kc_json_free(response);
+    response = NULL;
+    if (status == KC_KAIMAN_OK) {
+        params->size = 0U;
+        params->data[0] = '\0';
+        status = kc_buffer_text(params, "{\"threadId\":");
+    }
+    if (status == KC_KAIMAN_OK) status = json_write_text(params, thread);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(params, ",\"input\":[{\"type\":\"text\",\"text\":");
+    }
+    if (status == KC_KAIMAN_OK) status = json_write_text(params, prompt);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(params, ",\"text_elements\":[]}]}");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = codex_rpc(child, 4U, "turn/start", kc_buffer_value(params),
+            deadline, &response);
+    }
+    if (status == KC_KAIMAN_OK) {
+        id = kc_json_text(kc_json_member(kc_json_member(
+            kc_json_member(response, "result"), "turn"), "id"));
+        turn = id != NULL ? kc_util_strdup(id) : NULL;
+        if (turn == NULL) status = KC_KAIMAN_EPROTO;
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = codex_reply(child, thread, turn, deadline, reply);
+    }
+    kc_json_free(response);
+    kc_buffer_close(params);
+    kc_child_close(child);
+    free(thread);
+    free(turn);
+    return status;
+}
+
+/**
+ * Route a text chat through the installed Codex app-server.
+ * @param gateway Open gateway.
+ * @param peer Borrowed client peer.
+ * @param root Borrowed Chat Completions request.
+ * @param service Selected local service.
+ * @param model Requested upstream model.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int codex_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
+    const kc_json_value_t *root, const kc_kaiman_service_t *service,
+    const char *model) {
+    const char *requested = kc_json_text(kc_json_member(root, "model"));
+    kc_buffer_t *prompt = NULL;
+    kc_buffer_t *reply = NULL;
+    kc_kaiman_stream_t stream;
+    char *text = NULL;
+    char *final = NULL;
+    int streaming = kc_json_boolean(kc_json_member(root, "stream"));
+    int status;
+
+    memset(&stream, 0, sizeof(stream));
+    status = kc_buffer_open(&prompt);
+    if (status == KC_KAIMAN_OK) status = codex_prompt(root, prompt);
+    if (status != KC_KAIMAN_OK) {
+        status = gateway_failure(gateway, peer, 400,
+            "invalid or unsupported Codex text request");
+        goto done;
+    }
+    status = kc_buffer_open(&reply);
+    if (status == KC_KAIMAN_OK) {
+        status = codex_generate(service, model, kc_buffer_value(prompt), reply);
+    }
+    if (status != KC_KAIMAN_OK) {
+        status = gateway_failure(gateway, peer, 502,
+            "Codex local inference failed; check the installation and login");
+        goto done;
+    }
+    text = native_completion(kc_buffer_value(reply), requested,
+        streaming ? NULL : "stop", streaming);
+    if (streaming) final = native_completion(NULL, requested, "stop", 1);
+    if (text == NULL || (streaming && final == NULL)) {
+        status = gateway_failure(gateway, peer, 500, "could not build a response");
+        goto done;
+    }
+    if (streaming) {
+        stream.peer = peer;
+        stream.gateway = gateway;
+        status = gateway_sse_data(gateway, &stream, text);
+        if (status == KC_KAIMAN_OK) {
+            status = gateway_sse_data(gateway, &stream, final);
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = gateway_sse_data(gateway, &stream, "[DONE]");
+        }
+        if (stream.headers_sent) {
+            (void)kc_netl_peer_send(peer, "0\r\n\r\n", 5U);
+            kc_netl_peer_close(peer);
+        }
+    } else {
+        status = gateway_json(gateway, peer, 200, text);
+    }
+
+done:
+    free(text);
+    free(final);
+    kc_buffer_close(prompt);
+    kc_buffer_close(reply);
+    return status;
+}
+
+/**
  * Append one discovered model using a collision-free service namespace.
  * @param buffer Destination list.
  * @param service Source service.
@@ -3846,7 +4304,7 @@ static int catalog_fetch(const kc_kaiman_service_t *service,
  * @param count Number of models already written.
  * @return KC_KAIMAN_OK or an error status.
  */
-static int catalog_service(const kc_kaiman_service_t *service,
+static int catalog_http(const kc_kaiman_service_t *service,
     kc_buffer_t *buffer, size_t *count) {
     const char *path = "/models";
     char *authorization = NULL;
@@ -3895,6 +4353,109 @@ static int catalog_service(const kc_kaiman_service_t *service,
     }
     kc_kaiman_free(base);
     kc_kaiman_free(authorization);
+    return status;
+}
+
+/**
+ * Discover model identifiers from the installed Codex app-server.
+ * @param service Source service.
+ * @param buffer Destination list.
+ * @param count Number of models already written.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int catalog_codex(const kc_kaiman_service_t *service,
+    kc_buffer_t *buffer, size_t *count) {
+    kc_child_t *child = NULL;
+    kc_buffer_t *params = NULL;
+    char *cursor = NULL;
+    double deadline = kc_util_seconds() +
+        (double)kc_kaiman_service_timeout(service);
+    unsigned int page;
+    int status;
+
+    status = codex_open(&child, deadline);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&params);
+    for (page = 0U; status == KC_KAIMAN_OK && page < 100U; page++) {
+        kc_json_value_t *response = NULL;
+        const kc_json_value_t *result;
+        const kc_json_value_t *items;
+        const char *next;
+        char *following = NULL;
+        size_t index;
+
+        params->size = 0U;
+        if (params->data != NULL) params->data[0] = '\0';
+        status = kc_buffer_text(params, "{\"limit\":100,\"includeHidden\":true");
+        if (status == KC_KAIMAN_OK && cursor != NULL) {
+            status = kc_buffer_text(params, ",\"cursor\":");
+            if (status == KC_KAIMAN_OK) status = json_write_text(params, cursor);
+        }
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(params, "}");
+        if (status == KC_KAIMAN_OK) {
+            status = codex_rpc(child, page + 3U, "model/list",
+                kc_buffer_value(params), deadline, &response);
+        }
+        result = kc_json_member(response, "result");
+        items = kc_json_member(result, "data");
+        if (status == KC_KAIMAN_OK && kc_json_type(items) != KC_JSON_ARRAY) {
+            status = KC_KAIMAN_EFORMAT;
+        }
+        for (index = 0U; status == KC_KAIMAN_OK &&
+            index < kc_json_length(items); index++) {
+            const kc_json_value_t *item = kc_json_item(items, index);
+            const char *model = kc_json_text(kc_json_member(item, "model"));
+
+            if (model == NULL) model = kc_json_text(kc_json_member(item, "id"));
+            status = catalog_append(buffer, service, NULL, model, count);
+        }
+        next = kc_json_text(kc_json_member(result, "nextCursor"));
+        if (status == KC_KAIMAN_OK && next != NULL && *next != '\0') {
+            if (cursor != NULL && strcmp(cursor, next) == 0) {
+                status = KC_KAIMAN_EFORMAT;
+            } else {
+                following = kc_util_strdup(next);
+                if (following == NULL) status = KC_KAIMAN_ENOMEM;
+            }
+        }
+        kc_json_free(response);
+        free(cursor);
+        cursor = following;
+        if (cursor == NULL) break;
+    }
+    if (page == 100U) status = KC_KAIMAN_EFORMAT;
+    free(cursor);
+    kc_buffer_close(params);
+    kc_child_close(child);
+    return status;
+}
+
+/**
+ * Discover a service catalog through its configured transport.
+ * @param service Source service.
+ * @param buffer Destination list.
+ * @param count Number of models already written.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int catalog_service(const kc_kaiman_service_t *service,
+    kc_buffer_t *buffer, size_t *count) {
+    kc_kaiman_service_t resolved;
+    char *url = NULL;
+    char *password = NULL;
+    int status;
+
+    if (service->adapter == NULL) return KC_KAIMAN_EINVAL;
+    if (strcmp(service->adapter, "codex-local") == 0) {
+        return catalog_codex(service, buffer, count);
+    }
+    if (strcmp(service->adapter, "opencode-local") != 0) {
+        return catalog_http(service, buffer, count);
+    }
+    status = opencode_resolve(service, &resolved, &url, &password);
+    if (status == KC_KAIMAN_OK) {
+        status = catalog_http(&resolved, buffer, count);
+    }
+    free(url);
+    free(password);
     return status;
 }
 
@@ -4181,6 +4742,11 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
                 KC_KAIMAN_OK || service->adapter == NULL) {
                 (void)gateway_failure(gateway, connection->peer, 404,
                     "unknown model; use a service/model identifier");
+            } else if (strcmp(service->adapter, "opencode-local") == 0) {
+                (void)opencode_auto_chat(gateway, connection->peer, root,
+                    service, model);
+            } else if (strcmp(service->adapter, "codex-local") == 0) {
+                (void)codex_chat(gateway, connection->peer, root, service, model);
             } else if (strcmp(service->adapter, "opencode") == 0) {
                 (void)opencode_chat(gateway, connection->peer, root, service, model);
             } else if (strcmp(service->adapter, "openai") == 0 ||
