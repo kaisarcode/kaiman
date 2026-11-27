@@ -1373,11 +1373,11 @@ int kc_kaiman_gui_run(void) {
     state.health = NULL;
     url = gui_index_url();
 #ifdef _WIN32
-    icon = gui_asset_path("logo.ico");
+    icon = gui_asset_path("tray-started.ico");
     tray_started = gui_asset_path("tray-started.ico");
     tray_stopped = gui_asset_path("tray-stopped.ico");
 #else
-    icon = gui_asset_path("logo-128.png");
+    icon = gui_asset_path("tray-started.png");
     tray_started = gui_asset_path("tray-started.png");
     tray_stopped = gui_asset_path("tray-stopped.png");
 #endif

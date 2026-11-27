@@ -36,11 +36,11 @@
 #ifdef _WIN32
 #define INSTALL_EXE "kaiman.exe"
 #define INSTALL_EXT ".dll"
-#define INSTALL_ICON "gui/logo.ico"
+#define INSTALL_ICON "gui/tray-started.ico"
 #else
 #define INSTALL_EXE "kaiman"
 #define INSTALL_EXT ".so"
-#define INSTALL_ICON "gui/logo-128.png"
+#define INSTALL_ICON "gui/tray-started.png"
 #endif
 
 typedef struct {
