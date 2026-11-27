@@ -279,8 +279,12 @@ build-target: check-deps
 	cmake --build "$(BUILD_TARGET_DIR)" 2>&1 > "$$build_log"; \
 	build_status=$$?; \
 	if [ "$$build_status" -ne 0 ]; then cat "$$build_log" >&2; fi; \
-	rm -f "$$build_log"; \
-	exit "$$build_status"
+	rm -f "$build_log"; \
+	if [ "$build_status" -eq 0 ] && [ "$system" = Linux ] && \
+		[ -n "$(TARGET_GUI)" ]; then \
+		chmod 0755 "$(OUT_DIR)/install" || exit 1; \
+	fi; \
+	exit "$build_status"
 	@echo "OK kaiman $(TARGET)"
 
 NATIVE_SHARED := $(BIN_DIR)/$(NATIVE_TARGET)/libkaiman.$(NATIVE_EXT)
