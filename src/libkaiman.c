@@ -522,7 +522,8 @@ static int apply_field(kc_kaiman_service_t *service, const char *key,
         if (strcmp(value, "openai") != 0 && strcmp(value, "opencode") != 0 &&
             strcmp(value, "anthropic") != 0 && strcmp(value, "gemini") != 0 &&
             strcmp(value, "responses") != 0 && strcmp(value, "ollama") != 0 &&
-            strcmp(value, "bedrock") != 0) {
+            strcmp(value, "bedrock") != 0 &&
+            strcmp(value, "opencode-cloud") != 0) {
             set_error(kaiman, "unknown adapter: %s", value);
             return KC_KAIMAN_EINVAL;
         }
@@ -1858,7 +1859,9 @@ static int openai_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
         free(authorization);
         return gateway_failure(gateway, peer, 400, "invalid chat request");
     }
-    url = api_url(service->base_url, "/chat/completions");
+    url = api_url(service->base_url,
+        strcmp(service->adapter, "opencode-cloud") == 0 ?
+            "/openai/v1/chat/completions" : "/chat/completions");
     if (url == NULL) {
         free(authorization);
         free(body);
@@ -2197,7 +2200,7 @@ static char *opencode_session_id(const kc_upstream_response_t *response) {
 /**
  * Ensure one persistent OpenCode session exists for a service.
  * @param service Managed service.
- * @param state_path Persistent state path.
+ * @param state_path Persistent state path, or NULL for a temporary session.
  * @param model Upstream model identifier.
  * @param session Receives owned session identifier.
  * @return KC_KAIMAN_OK or an error status.
@@ -2219,8 +2222,11 @@ static int opencode_ensure_session(const kc_kaiman_service_t *service,
     if (session == NULL) return KC_KAIMAN_EINVAL;
     *session = NULL;
     memset(messages, 0, sizeof(messages));
-    status = opencode_state_load(state_path, &id, messages, &count);
-    if (status != KC_KAIMAN_OK) return status;
+    status = KC_KAIMAN_OK;
+    if (state_path != NULL) {
+        status = opencode_state_load(state_path, &id, messages, &count);
+        if (status != KC_KAIMAN_OK) return status;
+    }
 
     if (id != NULL) {
         path = (char *)malloc(strlen(id) + 24U);
@@ -2271,7 +2277,7 @@ static int opencode_ensure_session(const kc_kaiman_service_t *service,
         if (*session == NULL) status = KC_KAIMAN_EHTTP;
     }
     kc_upstream_response_free(&response);
-    if (status == KC_KAIMAN_OK) {
+    if (status == KC_KAIMAN_OK && state_path != NULL) {
         status = opencode_state_save(state_path, *session, messages, count);
     }
 
@@ -3044,7 +3050,147 @@ done:
 }
 
 /**
- * Forward one chat request to an OpenCode server using one persistent session.
+ * Determine whether the configured OpenCode server is on loopback.
+ * @param url Configured server URL.
+ * @return 1 for a loopback host, otherwise 0.
+ */
+static int opencode_local(const char *url) {
+    const char *host;
+    const char *end;
+    size_t length;
+
+    if (url == NULL) return 0;
+    host = strstr(url, "://");
+    if (host == NULL) return 0;
+    host += 3;
+    end = host + strcspn(host, "/?#");
+    if (host == end) return 0;
+    if (memchr(host, '@', (size_t)(end - host)) != NULL) return 0;
+    if (host[0] == '[') {
+        return (size_t)(end - host) >= 5U &&
+            strncmp(host, "[::1]", 5U) == 0 &&
+            (host + 5U == end || host[5] == ':');
+    }
+    length = strcspn(host, ":/?#");
+    return (length == 9U && strncmp(host, "localhost", length) == 0) ||
+        (length == 9U && strncmp(host, "127.0.0.1", length) == 0);
+}
+
+/**
+ * Switch a persistent OpenCode session to the requested model.
+ * @param service Managed service.
+ * @param session Session identifier.
+ * @param model Requested provider/model identifier.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int opencode_switch(const kc_kaiman_service_t *service,
+    const char *session, const char *model) {
+    kc_buffer_t *body = NULL;
+    kc_buffer_t *path = NULL;
+    kc_upstream_response_t response;
+    char *provider = NULL;
+    char *identifier = NULL;
+    int status;
+
+    status = opencode_split_model(model, &provider, &identifier);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&body);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&path);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(path, "/api/session/%s/model", session);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(body, "{\"model\":{\"providerID\":");
+    }
+    if (status == KC_KAIMAN_OK) status = json_write_text(body, provider);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(body, ",\"id\":");
+    if (status == KC_KAIMAN_OK) status = json_write_text(body, identifier);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(body, "}}");
+    if (status == KC_KAIMAN_OK) {
+        status = opencode_request(service, "POST", kc_buffer_value(path),
+            kc_buffer_value(body), &response);
+        if (status == KC_KAIMAN_OK && response.status >= 400) {
+            status = KC_KAIMAN_EHTTP;
+        }
+        kc_upstream_response_free(&response);
+    }
+    free(provider);
+    free(identifier);
+    kc_buffer_close(path);
+    kc_buffer_close(body);
+    return status;
+}
+
+/**
+ * Generate text on a remote OpenCode server using a temporary session.
+ * @param service Managed service.
+ * @param model Requested provider/model identifier.
+ * @param prompt Text prompt.
+ * @param reply Destination text buffer.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int opencode_remote(const kc_kaiman_service_t *service,
+    const char *model, const char *prompt, kc_buffer_t *reply) {
+    kc_buffer_t *body = NULL;
+    kc_buffer_t *path = NULL;
+    kc_json_value_t *root = NULL;
+    kc_upstream_response_t response;
+    char *session = NULL;
+    const char *text;
+    int status;
+
+    status = kc_buffer_open(&body);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&path);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(body, "{\"prompt\":");
+    }
+    if (status == KC_KAIMAN_OK) status = json_write_text(body, prompt);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(body, "}");
+    if (status == KC_KAIMAN_OK) {
+        status = opencode_ensure_session(service, NULL, model, &session);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(path, "/api/session/%s/generate", session);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = opencode_request(service, "POST", kc_buffer_value(path),
+            kc_buffer_value(body), &response);
+        if (status == KC_KAIMAN_OK && response.status >= 400) {
+            status = KC_KAIMAN_EHTTP;
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = kc_json_parse(response.body, response.body_size, &root);
+        }
+        if (status == KC_KAIMAN_OK) {
+            text = kc_json_text(kc_json_member(kc_json_member(root, "data"),
+                "text"));
+            status = text != NULL && *text != '\0' ?
+                kc_buffer_text(reply, text) : KC_KAIMAN_EFORMAT;
+        }
+        kc_upstream_response_free(&response);
+    }
+    if (session != NULL && path != NULL) {
+        path->size = 0U;
+        if (path->data != NULL) path->data[0] = '\0';
+        if (kc_buffer_format(path, "/api/session/%s", session) == KC_KAIMAN_OK) {
+            int removed = opencode_request(service, "DELETE",
+                kc_buffer_value(path), NULL, &response);
+
+            if (removed == KC_KAIMAN_OK && response.status >= 400) {
+                removed = KC_KAIMAN_EHTTP;
+            }
+            if (status == KC_KAIMAN_OK) status = removed;
+            kc_upstream_response_free(&response);
+        }
+    }
+    kc_json_free(root);
+    kc_buffer_close(body);
+    kc_buffer_close(path);
+    free(session);
+    return status;
+}
+
+/**
+ * Forward one chat request through an OpenCode server.
  * @param gateway Open gateway.
  * @param peer Borrowed client peer.
  * @param root Borrowed chat request object.
@@ -3087,11 +3233,24 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     memset(messages, 0, sizeof(messages));
     memset(&stream, 0, sizeof(stream));
     kc_mutex_lock(&gateway->mutex);
+    if (!opencode_local(service->base_url)) {
+        status = request_prompt(root, &text);
+        if (status == KC_KAIMAN_OK) status = kc_buffer_open(&reply);
+        if (status == KC_KAIMAN_OK) {
+            status = opencode_remote(service, model, text, reply);
+        }
+        free(text);
+        text = NULL;
+        goto respond;
+    }
     status = KC_KAIMAN_OK;
     state_path = opencode_session_path(service);
     if (state_path == NULL) status = KC_KAIMAN_ENOMEM;
     if (status == KC_KAIMAN_OK) {
         status = opencode_ensure_session(service, state_path, model, &session);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = opencode_switch(service, session, model);
     }
     if (status == KC_KAIMAN_OK) {
         status = request_prompt(root, &text);
@@ -3252,6 +3411,7 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
         status = opencode_state_save(state_path, session,
             messages, count);
     }
+respond:
     kc_mutex_unlock(&gateway->mutex);
 
     if (status != KC_KAIMAN_OK) {
@@ -3371,8 +3531,8 @@ static int catalog_contains(const kc_json_value_t *array, const char *text) {
 }
 
 /**
- * Decode connected OpenCode providers and their model identifiers.
- * @param root Borrowed provider catalog.
+ * Decode model identifiers returned by the OpenCode server.
+ * @param root Borrowed model array.
  * @param service Source service.
  * @param buffer Destination list.
  * @param count Number of models already written.
@@ -3380,28 +3540,19 @@ static int catalog_contains(const kc_json_value_t *array, const char *text) {
  */
 static int catalog_opencode(const kc_json_value_t *root,
     const kc_kaiman_service_t *service, kc_buffer_t *buffer, size_t *count) {
-    const kc_json_value_t *providers = kc_json_member(root, "all");
-    const kc_json_value_t *connected = kc_json_member(root, "connected");
     size_t index;
     int status = KC_KAIMAN_OK;
 
-    if (providers == NULL) providers = kc_json_member(root, "providers");
-    if (kc_json_type(providers) != KC_JSON_ARRAY) return KC_KAIMAN_EFORMAT;
+    if (kc_json_type(root) != KC_JSON_ARRAY) return KC_KAIMAN_EFORMAT;
     for (index = 0U; status == KC_KAIMAN_OK &&
-        index < kc_json_length(providers); index++) {
-        const kc_json_value_t *item = kc_json_item(providers, index);
-        const kc_json_value_t *models = kc_json_member(item, "models");
-        const char *provider = kc_json_text(kc_json_member(item, "id"));
-        size_t model_index;
+        index < kc_json_length(root); index++) {
+        const kc_json_value_t *item = kc_json_item(root, index);
+        const char *provider = kc_json_text(kc_json_member(item, "providerID"));
+        const char *model = kc_json_text(kc_json_member(item, "modelID"));
 
+        if (model == NULL) model = kc_json_text(kc_json_member(item, "id"));
         if (provider == NULL || *provider == '\0') return KC_KAIMAN_EFORMAT;
-        if (connected != NULL && !catalog_contains(connected, provider)) continue;
-        if (kc_json_type(models) != KC_JSON_OBJECT) return KC_KAIMAN_EFORMAT;
-        for (model_index = 0U; status == KC_KAIMAN_OK &&
-            model_index < kc_json_length(models); model_index++) {
-            status = catalog_append(buffer, service, provider,
-                kc_json_key(models, model_index), count);
-        }
+        status = catalog_append(buffer, service, provider, model, count);
     }
     return status;
 }
@@ -3447,6 +3598,11 @@ static int catalog_page(const kc_json_value_t *root,
         const kc_json_value_t *item = kc_json_item(items, index);
         const char *model = kc_json_text(kc_json_member(item, key));
 
+        if (strcmp(adapter, "opencode-cloud") == 0) {
+            const char *type = kc_json_text(kc_json_member(item, "type"));
+
+            if (type != NULL && strcmp(type, "chat") != 0) continue;
+        }
         if (gemini) {
             if (!catalog_contains(kc_json_member(item,
                 "supportedGenerationMethods"), "generateContent")) continue;
@@ -3663,7 +3819,8 @@ static int catalog_service(const kc_kaiman_service_t *service,
     }
     status = service_authorization(service, &authorization);
     if (status != KC_KAIMAN_OK) return status;
-    if (strcmp(service->adapter, "opencode") == 0) path = "/api/provider";
+    if (strcmp(service->adapter, "opencode") == 0) path = "/api/model";
+    else if (strcmp(service->adapter, "opencode-cloud") == 0) path = "/v1/models";
     else if (strcmp(service->adapter, "ollama") == 0) path = "/api/tags";
     else if (strcmp(service->adapter, "bedrock") == 0) path = "/foundation-models";
     base = strcmp(service->adapter, "bedrock") == 0 ?
@@ -3674,13 +3831,6 @@ static int catalog_service(const kc_kaiman_service_t *service,
         return KC_KAIMAN_ENOMEM;
     }
     status = catalog_fetch(service, base, path, 0, authorization, buffer, count);
-    if (status != KC_KAIMAN_OK && strcmp(service->adapter, "opencode") == 0) {
-        buffer->size = initial_size;
-        buffer->data[initial_size] = '\0';
-        *count = initial_count;
-        status = catalog_fetch(service, base, "/provider", 0, authorization,
-            buffer, count);
-    }
     if (strcmp(service->adapter, "bedrock") == 0) {
         size_t before = buffer->size;
         size_t before_count = *count;
@@ -3993,7 +4143,8 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
                     "unknown model; use a service/model identifier");
             } else if (strcmp(service->adapter, "opencode") == 0) {
                 (void)opencode_chat(gateway, connection->peer, root, service, model);
-            } else if (strcmp(service->adapter, "openai") == 0) {
+            } else if (strcmp(service->adapter, "openai") == 0 ||
+                strcmp(service->adapter, "opencode-cloud") == 0) {
                 (void)openai_chat(gateway, connection->peer, root, service, model);
             } else {
                 (void)native_chat(gateway, connection->peer, root, service, model);

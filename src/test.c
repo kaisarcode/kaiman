@@ -314,7 +314,15 @@ static void test_mock_receive(kc_netl_peer_t *peer, const void *data,
     if (size >= sizeof(request)) size = sizeof(request) - 1U;
     memcpy(request, data, size);
     request[size] = '\0';
-    if (strstr(request, "GET /gemini/models") != NULL) {
+    if (strstr(request, "GET /opencode/api/model") != NULL) {
+        payload = "{\"data\":[{\"providerID\":\"opencode\","
+            "\"id\":\"model-a\"},{\"providerID\":\"other\",\"modelID\":\"model-b\"}]}";
+        content_type = "application/json";
+    } else if (strstr(request, "GET /opencode-cloud/v1/models") != NULL) {
+        payload = "{\"data\":[{\"id\":\"model-a\",\"type\":\"chat\"},"
+            "{\"id\":\"embedding-a\",\"type\":\"embedding\"}]}";
+        content_type = "application/json";
+    } else if (strstr(request, "GET /gemini/models") != NULL) {
         payload = "{\"models\":[{\"name\":\"models/model-a\","
             "\"supportedGenerationMethods\":[\"generateContent\"]}]}";
         content_type = "application/json";
@@ -686,6 +694,20 @@ static int integration(const char *path) {
             goto done;
         }
     }
+    descriptor.name = "opencode";
+    descriptor.adapter = "opencode";
+    descriptor.base_url = "http://127.0.0.1:49382/opencode";
+    if (kc_kaiman_add_service(kaiman, &descriptor, &service) != KC_KAIMAN_OK) {
+        fprintf(stderr, "OpenCode server setup failed\n");
+        goto done;
+    }
+    descriptor.name = "opencode-cloud";
+    descriptor.adapter = "opencode-cloud";
+    descriptor.base_url = "http://127.0.0.1:49382/opencode-cloud";
+    if (kc_kaiman_add_service(kaiman, &descriptor, &service) != KC_KAIMAN_OK) {
+        fprintf(stderr, "OpenCode cloud setup failed\n");
+        goto done;
+    }
     kc_kaiman_close(kaiman);
     kaiman = NULL;
 
@@ -730,7 +752,8 @@ static int integration(const char *path) {
         strstr(response, "{\"name\":\"gemini\",\"slug\":\"gemini\"}") == NULL ||
         strstr(response, "{\"name\":\"bedrock\",\"slug\":\"bedrock\"}") == NULL ||
         strstr(response, "\"slug\":\"openai\"") != NULL ||
-        strstr(response, "\"slug\":\"opencode\"") != NULL ||
+        strstr(response, "\"slug\":\"opencode\"") == NULL ||
+        strstr(response, "\"slug\":\"opencode-cloud\"") == NULL ||
         strstr(response, "127.0.0.1:49382") != NULL ||
         strstr(response, "\"adapter\"") != NULL ||
         strstr(response, "\"keyring\"") != NULL) {
@@ -746,8 +769,22 @@ static int integration(const char *path) {
         strstr(response, "\"id\":\"responses/model-a\"") == NULL ||
         strstr(response, "\"id\":\"ollama/model-a\"") == NULL ||
         strstr(response, "\"id\":\"bedrock/model-a\"") == NULL ||
-        strstr(response, "\"id\":\"bedrock/profile-a\"") == NULL) {
+        strstr(response, "\"id\":\"bedrock/profile-a\"") == NULL ||
+        strstr(response, "\"id\":\"opencode/opencode/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"opencode/other/model-b\"") == NULL ||
+        strstr(response, "\"id\":\"opencode-cloud/model-a\"") == NULL ||
+        strstr(response, "\"id\":\"opencode-cloud/embedding-a\"") != NULL) {
         fprintf(stderr, "models endpoint failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/chat/completions",
+        "{\"model\":\"opencode-cloud/model-a\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"hi\"}]}", &size);
+    if (response == NULL ||
+        strstr(response, "\"model\":\"opencode-cloud/model-a\"") == NULL ||
+        strstr(response, "\"content\":\"hello\"") == NULL) {
+        fprintf(stderr, "OpenCode cloud completion failed\n");
         result = 1;
     }
     free(response);

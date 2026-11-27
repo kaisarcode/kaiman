@@ -180,11 +180,19 @@ Supported adapters:
 - `openai` forwards chat requests to an OpenAI-compatible `/chat/completions`
     endpoint, removing the service prefix from the requested model and
     restoring the full identifier in responses. Model discovery uses `/models`.
-- `opencode` uses the local OpenCode API. Its model identifier is
-    `service/providerID/modelID`. Discovery queries the provider catalog.
-    It reuses one persisted session per upstream server,
-    keeps a bounded conversation history, and serializes requests that share
-    that session. `stream:true` emits the completed reply as SSE chunks.
+- `opencode` (OpenCode Server) uses the server HTTP API at its root URL.
+    Discovery uses `/api/model`, and model IDs use
+    `service/providerID/modelID`. Loopback servers reuse a persisted session,
+    switch to the requested model before prompting, and retain bounded
+    history. Remote servers create a temporary session, generate text and
+    remove the session. Use basic authentication if the server requires it.
+    `stream:true` emits the completed reply as SSE chunks.
+- `opencode-cloud` (OpenCode Cloud) uses the Console inference API. Set the
+    base URL to `https://opencode.ai/inference` for OpenCode Models or
+    `https://opencode.ai/inference/go` for Go, with a bearer API key.
+    Discovery uses `/v1/models`; chat uses `/openai/v1/chat/completions`.
+    Non-chat model types are omitted. Free-tier chat models can require
+    the OpenCode application.
 - `anthropic` uses the Messages API (`/messages`). Set the base URL to the API
     version root and use `scheme=bearer` for the API key.
 - `gemini` uses `generateContent` with the model in the URL. Set the base URL

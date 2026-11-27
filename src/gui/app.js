@@ -148,6 +148,28 @@ function renderAuthentication() {
 }
 
 /**
+ * Apply connection defaults when choosing an OpenCode provider.
+ * @return void
+ */
+function handleProvider() {
+    var provider = byId("field-adapter").value;
+
+    if (provider === "opencode-cloud") {
+        byId("field-url").value = "https://opencode.ai/inference";
+        byId("field-scheme").value = "bearer";
+    } else if (provider === "opencode") {
+        byId("field-url").value = "";
+        byId("field-scheme").value = "basic";
+        byId("field-user").value = "opencode";
+    } else {
+        return;
+    }
+    byId("field-secret").value = "";
+    editedAuthentication = null;
+    renderAuthentication();
+}
+
+/**
  * Reset the service form to its add state.
  * @return void
  */
@@ -476,6 +498,7 @@ function bindEvents() {
     byId("service-list").addEventListener("click", handleServiceSelect);
     byId("new-service").addEventListener("click", handleNew);
     byId("service-form").addEventListener("submit", handleSubmit);
+    byId("field-adapter").addEventListener("change", handleProvider);
     byId("field-scheme").addEventListener("change", renderAuthentication);
     byId("remove-service").addEventListener("click", handleRemove);
     byId("remove-dialog").addEventListener("close", handleRemoveConfirm);
