@@ -4833,6 +4833,528 @@ static int gateway_models(kc_kaiman_gateway_t *gateway, const char *filter,
 }
 
 /**
+ * Write normalized session metadata without exposing the transcript.
+ * @param buffer Destination buffer.
+ * @param service Configured provider.
+ * @param id Upstream session identifier.
+ * @param title Optional session title.
+ * @param state Normalized runtime state.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int session_write(kc_buffer_t *buffer,
+    const kc_kaiman_service_t *service, const char *id, const char *title,
+    const char *state) {
+    kc_buffer_t *name = NULL;
+    int status;
+
+    if (!session_valid(id)) return KC_KAIMAN_EFORMAT;
+    status = kc_buffer_open(&name);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(name, "%s/%s", service->name, id);
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "{\"id\":");
+    if (status == KC_KAIMAN_OK) {
+        status = json_write_text(buffer, kc_buffer_value(name));
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(buffer, ",\"provider\":");
+    }
+    if (status == KC_KAIMAN_OK) status = json_write_text(buffer, service->name);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(buffer, ",\"title\":");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = title != NULL ? json_write_text(buffer, title) :
+            kc_buffer_text(buffer, "null");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(buffer, ",\"status\":");
+    }
+    if (status == KC_KAIMAN_OK) status = json_write_text(buffer, state);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}");
+    kc_buffer_close(name);
+    return status;
+}
+
+/**
+ * Normalize the state returned for a Codex thread.
+ * @param thread Borrowed thread metadata.
+ * @return Borrowed normalized state.
+ */
+static const char *codex_state(const kc_json_value_t *thread) {
+    const kc_json_value_t *type = kc_json_member(
+        kc_json_member(thread, "status"), "type");
+
+    if (native_equals(type, "active")) return "active";
+    if (native_equals(type, "idle")) return "idle";
+    if (native_equals(type, "systemError")) return "error";
+    return "unknown";
+}
+
+/**
+ * Append a page of upstream sessions to a normalized catalog.
+ * @param items Borrowed array of sessions or threads.
+ * @param active Borrowed OpenCode activity map, or NULL when unavailable.
+ * @param service Source provider.
+ * @param buffer Destination list.
+ * @param count Number of entries already written.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int session_page(const kc_json_value_t *items,
+    const kc_json_value_t *active, const kc_kaiman_service_t *service,
+    kc_buffer_t *buffer, size_t *count) {
+    size_t index;
+    int codex = session_type(service) == 2;
+    int status = KC_KAIMAN_OK;
+
+    if (kc_json_type(items) != KC_JSON_ARRAY) return KC_KAIMAN_EFORMAT;
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < kc_json_length(items); index++) {
+        const kc_json_value_t *item = kc_json_item(items, index);
+        const char *id = kc_json_text(kc_json_member(item, "id"));
+        const char *title = kc_json_text(kc_json_member(item,
+            codex ? "name" : "title"));
+        const char *state = "unknown";
+
+        if (!session_valid(id)) return KC_KAIMAN_EFORMAT;
+        if (codex) {
+            if (kc_json_boolean(kc_json_member(item, "ephemeral"))) continue;
+            state = codex_state(item);
+        } else if (active != NULL) {
+            state = kc_json_member(active, id) != NULL ? "active" : "idle";
+        }
+        if (*count != 0U) status = kc_buffer_text(buffer, ",");
+        if (status == KC_KAIMAN_OK) {
+            status = session_write(buffer, service, id, title, state);
+        }
+        if (status == KC_KAIMAN_OK) (*count)++;
+    }
+    return status;
+}
+
+/**
+ * Discover non-archived sessions through the OpenCode HTTP API.
+ * @param service Resolved HTTP service.
+ * @param buffer Destination list.
+ * @param count Number of entries already written.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int session_opencode(const kc_kaiman_service_t *service,
+    kc_buffer_t *buffer, size_t *count) {
+    kc_json_value_t *active = NULL;
+    char *authorization = NULL;
+    char *cursor = NULL;
+    unsigned int page;
+    int status;
+
+    status = service_authorization(service, &authorization);
+    if (status != KC_KAIMAN_OK) return status;
+    (void)opencode_active(service, &active);
+    for (page = 0U; page < 100U; page++) {
+        kc_json_value_t *root = NULL;
+        const char *next;
+        char *following = NULL;
+
+        status = catalog_request(service, kc_kaiman_service_url(service),
+            "/api/session?limit=100&archived=false", "cursor", cursor,
+            authorization, &root);
+        if (status == KC_KAIMAN_OK) {
+            status = session_page(kc_json_member(root, "data"), active,
+                service, buffer, count);
+        }
+        next = kc_json_text(kc_json_member(kc_json_member(root, "cursor"),
+            "next"));
+        if (status == KC_KAIMAN_OK && next != NULL && *next != '\0') {
+            if (cursor != NULL && strcmp(cursor, next) == 0) {
+                status = KC_KAIMAN_EFORMAT;
+            } else {
+                following = kc_util_strdup(next);
+                if (following == NULL) status = KC_KAIMAN_ENOMEM;
+            }
+        }
+        kc_json_free(root);
+        free(cursor);
+        cursor = following;
+        if (status != KC_KAIMAN_OK || cursor == NULL) break;
+    }
+    if (page == 100U) status = KC_KAIMAN_EFORMAT;
+    kc_json_free(active);
+    free(authorization);
+    free(cursor);
+    return status;
+}
+
+/**
+ * Discover non-archived local Codex threads for the current account.
+ * @param gateway Open gateway with its mutex held.
+ * @param service Configured Codex service.
+ * @param buffer Destination list.
+ * @param count Number of entries already written.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int session_codex(kc_kaiman_gateway_t *gateway,
+    const kc_kaiman_service_t *service, kc_buffer_t *buffer, size_t *count) {
+    kc_buffer_t *params = NULL;
+    char *cursor = NULL;
+    double deadline = kc_util_seconds() +
+        (double)kc_kaiman_service_timeout(service);
+    unsigned int page;
+    int status;
+
+    status = codex_connect(gateway, deadline);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&params);
+    for (page = 0U; status == KC_KAIMAN_OK && page < 100U; page++) {
+        kc_json_value_t *response = NULL;
+        const kc_json_value_t *result;
+        const char *next;
+        char *following = NULL;
+
+        params->size = 0U;
+        if (params->data != NULL) params->data[0] = '\0';
+        status = kc_buffer_text(params,
+            "{\"limit\":100,\"archived\":false,\"currentAccountOnly\":true");
+        if (status == KC_KAIMAN_OK && cursor != NULL) {
+            status = kc_buffer_text(params, ",\"cursor\":");
+            if (status == KC_KAIMAN_OK) status = json_write_text(params, cursor);
+        }
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(params, "}");
+        if (status == KC_KAIMAN_OK) {
+            status = codex_rpc(gateway->codex, page + 3U, "thread/list",
+                kc_buffer_value(params), deadline, &response);
+        }
+        result = kc_json_member(response, "result");
+        if (status == KC_KAIMAN_OK) {
+            status = session_page(kc_json_member(result, "data"), NULL,
+                service, buffer, count);
+        }
+        next = kc_json_text(kc_json_member(result, "nextCursor"));
+        if (status == KC_KAIMAN_OK && next != NULL && *next != '\0') {
+            if (cursor != NULL && strcmp(cursor, next) == 0) {
+                status = KC_KAIMAN_EFORMAT;
+            } else {
+                following = kc_util_strdup(next);
+                if (following == NULL) status = KC_KAIMAN_ENOMEM;
+            }
+        }
+        kc_json_free(response);
+        free(cursor);
+        cursor = following;
+        if (cursor == NULL) break;
+    }
+    if (page == 100U) status = KC_KAIMAN_EFORMAT;
+    if (status != KC_KAIMAN_OK) codex_disconnect(gateway);
+    free(cursor);
+    kc_buffer_close(params);
+    return status;
+}
+
+/**
+ * Build a session catalog from selected session-capable providers.
+ * @param gateway Open gateway.
+ * @param filter Selected provider names, or NULL for all.
+ * @param out Receives owned JSON text.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int gateway_sessions(kc_kaiman_gateway_t *gateway, const char *filter,
+    char **out) {
+    kc_buffer_t *buffer = NULL;
+    size_t index;
+    size_t count = 0U;
+    size_t selected = 0U;
+    size_t available = 0U;
+    int status;
+
+    *out = NULL;
+    status = kc_buffer_open(&buffer);
+    if (status != KC_KAIMAN_OK) return status;
+    status = kc_buffer_text(buffer, "{\"data\":[");
+    kc_mutex_lock(&gateway->mutex);
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < gateway->manager->count; index++) {
+        kc_kaiman_service_t *service = gateway->manager->services[index];
+        kc_kaiman_service_t resolved;
+        char *url = NULL;
+        char *password = NULL;
+        size_t before = buffer->size;
+        size_t previous = count;
+        int type = session_type(service);
+        int discovered = KC_KAIMAN_OK;
+
+        if ((type != 1 && type != 2) ||
+            !catalog_selected(filter, service->name)) continue;
+        selected++;
+        if (type == 2) {
+            discovered = session_codex(gateway, service, buffer, &count);
+        } else {
+            if (strcmp(service->adapter, "opencode-local") == 0) {
+                discovered = opencode_resolve(service, &resolved, &url,
+                    &password);
+                if (discovered == KC_KAIMAN_OK) service = &resolved;
+            }
+            if (discovered == KC_KAIMAN_OK) {
+                discovered = session_opencode(service, buffer, &count);
+            }
+        }
+        free(url);
+        free(password);
+        if (discovered == KC_KAIMAN_OK) {
+            available++;
+        } else {
+            buffer->size = before;
+            buffer->data[before] = '\0';
+            count = previous;
+        }
+    }
+    kc_mutex_unlock(&gateway->mutex);
+    if (status == KC_KAIMAN_OK && selected != 0U && available == 0U) {
+        status = KC_KAIMAN_EHTTP;
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "]}");
+    if (status == KC_KAIMAN_OK) {
+        *out = kc_util_strdup(kc_buffer_value(buffer));
+        if (*out == NULL) status = KC_KAIMAN_ENOMEM;
+    }
+    kc_buffer_close(buffer);
+    return status;
+}
+
+/**
+ * Create or fork an OpenCode session through its server API.
+ * @param service Resolved HTTP service.
+ * @param model Upstream model for a new session, or NULL.
+ * @param parent Upstream source session for a fork, or NULL.
+ * @param title Optional title for a new session.
+ * @param before Optional message before which to fork.
+ * @param out Destination for normalized session metadata.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int session_open_opencode(const kc_kaiman_service_t *service,
+    const char *model, const char *parent, const char *title,
+    const char *before, kc_buffer_t *out) {
+    kc_upstream_response_t response;
+    kc_json_value_t *root = NULL;
+    kc_buffer_t *path = NULL;
+    kc_buffer_t *body = NULL;
+    char *provider = NULL;
+    char *identifier = NULL;
+    const kc_json_value_t *data;
+    const char *name;
+    int status;
+
+    memset(&response, 0, sizeof(response));
+    status = kc_buffer_open(&path);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&body);
+    if (status == KC_KAIMAN_OK) {
+        status = parent != NULL ?
+            kc_buffer_format(path, "/api/session/%s/fork", parent) :
+            kc_buffer_text(path, "/api/session");
+    }
+    if (status == KC_KAIMAN_OK && parent != NULL) {
+        status = kc_buffer_text(body, "{");
+        if (status == KC_KAIMAN_OK && before != NULL) {
+            status = kc_buffer_text(body, "\"before\":");
+            if (status == KC_KAIMAN_OK) status = json_write_text(body, before);
+        }
+    } else if (status == KC_KAIMAN_OK) {
+        status = opencode_split_model(model, &provider, &identifier);
+        if (status == KC_KAIMAN_OK) {
+            status = kc_buffer_text(body, "{\"title\":");
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = json_write_text(body, title != NULL ? title : "kaiman");
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = kc_buffer_text(body, ",\"model\":{\"providerID\":");
+        }
+        if (status == KC_KAIMAN_OK) status = json_write_text(body, provider);
+        if (status == KC_KAIMAN_OK) {
+            status = kc_buffer_text(body, ",\"id\":");
+        }
+        if (status == KC_KAIMAN_OK) status = json_write_text(body, identifier);
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(body, "}");
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(body, "}");
+    if (status == KC_KAIMAN_OK) {
+        status = opencode_request(service, "POST", kc_buffer_value(path),
+            kc_buffer_value(body), &response);
+    }
+    if (status == KC_KAIMAN_OK && response.status >= 400) {
+        status = response.status == 404 ? KC_KAIMAN_NOT_FOUND :
+            (response.status == 409 ? KC_KAIMAN_EBUSY : KC_KAIMAN_EHTTP);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_json_parse(response.body, response.body_size, &root);
+    }
+    if (status == KC_KAIMAN_OK) {
+        data = kc_json_member(root, "data");
+        name = kc_json_text(kc_json_member(data, "title"));
+        status = session_write(out, service,
+            kc_json_text(kc_json_member(data, "id")),
+            name != NULL ? name : title, "idle");
+    }
+    kc_json_free(root);
+    kc_upstream_response_free(&response);
+    kc_buffer_close(path);
+    kc_buffer_close(body);
+    free(provider);
+    free(identifier);
+    return status;
+}
+
+/**
+ * Create or fork a persistent Codex thread.
+ * @param gateway Open gateway with its mutex held.
+ * @param service Configured Codex service.
+ * @param model Upstream model for a new thread, or NULL.
+ * @param parent Source thread identifier for a fork, or NULL.
+ * @param title Optional title for a new thread.
+ * @param last_turn Optional last turn included in a fork.
+ * @param out Destination for normalized session metadata.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int session_open_codex(kc_kaiman_gateway_t *gateway,
+    const kc_kaiman_service_t *service, const char *model, const char *parent,
+    const char *title, const char *last_turn, kc_buffer_t *out) {
+    kc_buffer_t *params = NULL;
+    kc_json_value_t *response = NULL;
+    kc_json_value_t *renamed = NULL;
+    const kc_json_value_t *thread;
+    const char *id;
+    const char *name;
+    double deadline = kc_util_seconds() +
+        (double)kc_kaiman_service_timeout(service);
+    int status;
+
+    status = codex_connect(gateway, deadline);
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&params);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(params, parent != NULL ?
+            "{\"threadId\":" : "{\"model\":");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = json_write_text(params, parent != NULL ? parent : model);
+    }
+    if (status == KC_KAIMAN_OK && parent != NULL) {
+        status = kc_buffer_text(params, ",\"excludeTurns\":true");
+        if (status == KC_KAIMAN_OK && last_turn != NULL) {
+            status = kc_buffer_text(params, ",\"lastTurnId\":");
+            if (status == KC_KAIMAN_OK) {
+                status = json_write_text(params, last_turn);
+            }
+        }
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(params,
+            ",\"ephemeral\":false,\"approvalPolicy\":\"never\","
+            "\"sandbox\":\"read-only\"}");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = codex_rpc(gateway->codex, 3U, parent != NULL ?
+            "thread/fork" : "thread/start", kc_buffer_value(params), deadline,
+            &response);
+    }
+    thread = kc_json_member(kc_json_member(response, "result"), "thread");
+    id = kc_json_text(kc_json_member(thread, "id"));
+    name = kc_json_text(kc_json_member(thread, "name"));
+    if (status == KC_KAIMAN_OK && !session_valid(id)) {
+        status = KC_KAIMAN_EFORMAT;
+    }
+    if (status == KC_KAIMAN_OK && title != NULL) {
+        params->size = 0U;
+        params->data[0] = '\0';
+        status = kc_buffer_text(params, "{\"threadId\":");
+        if (status == KC_KAIMAN_OK) status = json_write_text(params, id);
+        if (status == KC_KAIMAN_OK) {
+            status = kc_buffer_text(params, ",\"name\":");
+        }
+        if (status == KC_KAIMAN_OK) status = json_write_text(params, title);
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(params, "}");
+        if (status == KC_KAIMAN_OK) {
+            status = codex_rpc(gateway->codex, 4U, "thread/name/set",
+                kc_buffer_value(params), deadline, &renamed);
+        }
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = session_write(out, service, id,
+            title != NULL ? title : name, codex_state(thread));
+    }
+    if (status != KC_KAIMAN_OK) codex_disconnect(gateway);
+    kc_json_free(renamed);
+    kc_json_free(response);
+    kc_buffer_close(params);
+    return status;
+}
+
+/**
+ * Process an explicit session creation or fork request.
+ * @param gateway Open gateway.
+ * @param root Borrowed request object.
+ * @param fork Whether to fork an existing session.
+ * @param out Receives owned JSON metadata.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int gateway_session_open(kc_kaiman_gateway_t *gateway,
+    const kc_json_value_t *root, int fork, char **out) {
+    kc_kaiman_service_t *service = NULL;
+    kc_kaiman_service_t resolved;
+    kc_buffer_t *buffer = NULL;
+    const char *requested = kc_json_text(kc_json_member(root,
+        fork ? "session" : "model"));
+    const char *title = kc_json_text(kc_json_member(root, "title"));
+    const char *before = kc_json_text(kc_json_member(root, "before"));
+    const char *last_turn = kc_json_text(kc_json_member(root, "last_turn"));
+    const char *id = NULL;
+    char *url = NULL;
+    char *password = NULL;
+    int type;
+    int status;
+
+    *out = NULL;
+    if (kc_json_type(root) != KC_JSON_OBJECT || requested == NULL ||
+        (kc_json_member(root, "title") != NULL && title == NULL) ||
+        (kc_json_member(root, "before") != NULL && before == NULL) ||
+        (kc_json_member(root, "last_turn") != NULL && last_turn == NULL)) {
+        return KC_KAIMAN_EINVAL;
+    }
+    status = gateway_select(gateway->manager, requested, &service, &id);
+    if (status != KC_KAIMAN_OK) return status;
+    type = session_type(service);
+    if ((type != 1 && type != 2) ||
+        (fork && !session_valid(id)) ||
+        (!fork && (before != NULL || last_turn != NULL)) ||
+        (fork && title != NULL) ||
+        (before != NULL && (type != 1 || !session_valid(before))) ||
+        (last_turn != NULL && (type != 2 || !session_valid(last_turn)))) {
+        return KC_KAIMAN_EINVAL;
+    }
+    status = kc_buffer_open(&buffer);
+    if (status != KC_KAIMAN_OK) return status;
+    kc_mutex_lock(&gateway->mutex);
+    if (type == 2) {
+        status = session_open_codex(gateway, service, fork ? NULL : id,
+            fork ? id : NULL, title, last_turn, buffer);
+    } else {
+        if (strcmp(service->adapter, "opencode-local") == 0) {
+            status = opencode_resolve(service, &resolved, &url, &password);
+            if (status == KC_KAIMAN_OK) service = &resolved;
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = session_open_opencode(service, fork ? NULL : id,
+                fork ? id : NULL, title, before, buffer);
+        }
+    }
+    kc_mutex_unlock(&gateway->mutex);
+    if (status == KC_KAIMAN_OK) {
+        *out = kc_util_strdup(kc_buffer_value(buffer));
+        if (*out == NULL) status = KC_KAIMAN_ENOMEM;
+    }
+    kc_buffer_close(buffer);
+    free(url);
+    free(password);
+    return status;
+}
+
+/**
  * Handle one parsed HTTP request.
  * @param request Borrowed request.
  * @param userdata Borrowed connection state.
@@ -4880,6 +5402,53 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
             (void)gateway_json(gateway, connection->peer, 200, providers);
             kc_kaiman_free(providers);
         }
+        return;
+    }
+    if (strcmp(request->method, "GET") == 0 &&
+        strcmp(request->path, "/v1/sessions") == 0) {
+        char *filter = NULL;
+        char *sessions = NULL;
+        int status = catalog_filter(request->query, &filter);
+
+        if (status == KC_KAIMAN_OK) {
+            status = gateway_sessions(gateway, filter, &sessions);
+        }
+        free(filter);
+        if (status != KC_KAIMAN_OK) {
+            (void)gateway_failure(gateway, connection->peer,
+                status == KC_KAIMAN_EINVAL ? 400 :
+                (status == KC_KAIMAN_EHTTP ? 502 : 500),
+                "could not discover sessions");
+        } else {
+            (void)gateway_json(gateway, connection->peer, 200, sessions);
+        }
+        free(sessions);
+        return;
+    }
+    if (strcmp(request->method, "POST") == 0 &&
+        (strcmp(request->path, "/v1/sessions") == 0 ||
+            strcmp(request->path, "/v1/sessions/fork") == 0)) {
+        char *session = NULL;
+        int fork = strcmp(request->path, "/v1/sessions/fork") == 0;
+        int status = kc_json_parse(kc_buffer_value(connection->body),
+            connection->body->size, &root);
+
+        if (status != KC_KAIMAN_OK) status = KC_KAIMAN_EINVAL;
+        else status = gateway_session_open(gateway, root, fork, &session);
+        if (status != KC_KAIMAN_OK) {
+            int http = 502;
+
+            if (status == KC_KAIMAN_EINVAL) http = 400;
+            else if (status == KC_KAIMAN_NOT_FOUND) http = 404;
+            else if (status == KC_KAIMAN_EBUSY) http = 409;
+            else if (status == KC_KAIMAN_ENOMEM) http = 500;
+            (void)gateway_failure(gateway, connection->peer, http,
+                "could not create or fork session");
+        } else {
+            (void)gateway_json(gateway, connection->peer, 200, session);
+        }
+        free(session);
+        kc_json_free(root);
         return;
     }
     if (strcmp(request->method, "GET") == 0 &&
