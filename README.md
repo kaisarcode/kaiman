@@ -1,40 +1,26 @@
 # kaiman
 
-kaiman is a unified AI service manager and gateway. Connect local and remote
-AI services, manage them from a desktop interface or the command line, and
-access their models through a single OpenAI-compatible API.
+kaiman is a unified AI gateway that brings local and cloud AI services
+together in one place. Manage your connections, access models from different
+providers and continue conversations through a single OpenAI-compatible
+gateway.
 
 ![kaiman desktop interface](screenshot.png)
 
 ## Quick start
 
-Connect an installed OpenCode client and start the gateway:
-
-```sh
-kaiman add local-opencode adapter=opencode-local
-kaiman start
-curl http://127.0.0.1:49380/v1/models
-```
-
-Run `kaiman gui` to manage services from the desktop. To install the desktop
-application, run `installer` on Linux or `installer.exe` on Windows.
+Run the installer included in the Linux or Windows desktop distribution.
+Open kaiman, add your AI services and start the gateway.
 
 ## Documentation
 
-- [CLI](doc/cli.md) - command-line and desktop usage
 - [Providers](doc/providers.md) - supported AI services
 - [Configuration](doc/configuration.md) - settings and credentials
 - [Sessions](doc/sessions.md) - persistent conversations
+- [CLI](doc/cli.md) - command-line and desktop usage
 - [HTTP API](doc/http-api.md) - application integration
-- [Public API](doc/api.md) - C and JavaScript integration
-- [Build](doc/build.md) - build targets, dependencies and tests
-
-## Build
-
-```sh
-make
-make test
-```
+- [Public API](doc/api.md) - library integration
+- [Build](doc/build.md) - building from source
 
 ## License
 
