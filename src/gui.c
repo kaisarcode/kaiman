@@ -34,6 +34,7 @@
 
 typedef struct {
     volatile sig_atomic_t stop;
+    volatile sig_atomic_t toggle_dirty;
     kc_wvw_t *wvw;
     kc_tray_t *tray;
     kc_tray_item_t *toggle;
@@ -535,9 +536,7 @@ static int bridge_start_gateway(kc_gui_state_t *state) {
     int result = kc_kaiman_start(NULL);
 
     if (result == KC_KAIMAN_OK) {
-        if (state != NULL && state->toggle != NULL) {
-            (void)kc_tray_item_set_text(state->toggle, "Stop");
-        }
+        if (state != NULL) state->toggle_dirty = 1;
         return set_success();
     }
     (void)set_error(NULL, result, NULL);
@@ -553,9 +552,7 @@ static int bridge_stop_gateway(kc_gui_state_t *state) {
     int result = kc_kaiman_stop();
 
     if (result == KC_KAIMAN_OK) {
-        if (state != NULL && state->toggle != NULL) {
-            (void)kc_tray_item_set_text(state->toggle, "Start");
-        }
+        if (state != NULL) state->toggle_dirty = 1;
         return set_success();
     }
     (void)set_error(NULL, result, NULL);
@@ -605,21 +602,20 @@ static void tray_open(kc_tray_item_t *item, void *userdata) {
 /**
  * Toggle the gateway from the tray Start/Stop item.
  * @param item Invoked tray item.
- * @param userdata Active GUI state, unused.
+ * @param userdata Active GUI state.
  * @return void
  */
 static void tray_toggle(kc_tray_item_t *item, void *userdata) {
+    kc_gui_state_t *state = (kc_gui_state_t *)userdata;
     int result;
 
-    (void)userdata;
-    if (item == NULL) return;
+    if (item == NULL || state == NULL) return;
     if (gateway_running() != 0) {
         result = kc_kaiman_stop();
-        if (result == KC_KAIMAN_OK) (void)kc_tray_item_set_text(item, "Start");
     } else {
         result = kc_kaiman_start(NULL);
-        if (result == KC_KAIMAN_OK) (void)kc_tray_item_set_text(item, "Stop");
     }
+    if (result == KC_KAIMAN_OK) state->toggle_dirty = 1;
 }
 
 /**
@@ -1045,6 +1041,7 @@ int kc_kaiman_gui_run(void) {
     int result = 1;
 
     state.stop = 0;
+    state.toggle_dirty = 0;
     state.wvw = NULL;
     state.tray = NULL;
     state.toggle = NULL;
@@ -1118,6 +1115,11 @@ int kc_kaiman_gui_run(void) {
     signal(SIGTERM, gui_signal);
 #endif
     while (state.stop == 0) {
+        if (state.toggle_dirty != 0 && state.toggle != NULL) {
+            state.toggle_dirty = 0;
+            (void)kc_tray_item_set_text(state.toggle,
+                gateway_running() != 0 ? "Stop" : "Start");
+        }
         kc_util_sleep(100);
     }
     result = 0;
