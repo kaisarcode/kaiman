@@ -71,7 +71,8 @@ gateway state, including changes made through the CLI.
 
 ## API endpoints
 
-The desktop shows the configured API base URL and endpoint paths. Copy buttons
+Open the API endpoints dialog using the code icon in the Gateway panel.
+The dialog shows the configured API base URL and endpoint paths. Copy buttons
 copy full HTTP URLs, using `127.0.0.1` for IPv4 wildcard listeners and `[::1]`
 for IPv6 wildcard listeners. Specific interface addresses remain unchanged.
 The base URL includes `/v1`; the health endpoint is at `/health` on the origin.

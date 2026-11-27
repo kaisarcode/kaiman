@@ -634,11 +634,12 @@ function copySelection(text) {
     var input = document.createElement("textarea");
     var focus = document.activeElement;
     var copied = false;
+    var dialog = focus && focus.closest("dialog[open]");
 
     input.className = "clipboard-text";
     input.value = text;
     input.readOnly = true;
-    document.body.appendChild(input);
+    (dialog || document.body).appendChild(input);
     try {
         input.select();
         copied = document.execCommand("copy");
@@ -647,6 +648,30 @@ function copySelection(text) {
         if (focus) focus.focus();
     }
     return copied;
+}
+
+/**
+ * Display feedback in the API dialog and the main status bar.
+ * @param text Status message, or empty to clear it.
+ * @param kind Status kind.
+ * @return void
+ */
+function showApiMessage(text, kind) {
+    var status = byId("api-status");
+
+    status.textContent = text;
+    status.setAttribute("data-kind", kind);
+    status.hidden = text === "";
+    if (text !== "") showMessage(text, kind);
+}
+
+/**
+ * Open the API endpoint dialog.
+ * @return void
+ */
+function handleApi() {
+    showApiMessage("", "info");
+    byId("api-dialog").showModal();
 }
 
 /**
@@ -666,9 +691,10 @@ async function handleApiCopy(event) {
             if (!navigator.clipboard) throw new Error("Clipboard unavailable.");
             await navigator.clipboard.writeText(url);
         }
-        showMessage("URL copied.", "success");
+        showApiMessage("URL copied.", "success");
     } catch (error) {
-        showMessage("Unable to copy URL: " + describeError(error), "error");
+        showApiMessage("Unable to copy URL: " + describeError(error),
+            "error");
     }
 }
 
@@ -682,7 +708,7 @@ async function handleApiDocumentation(event) {
     try {
         await bridge("openApiDocumentation", null);
     } catch (error) {
-        showMessage(describeError(error), "error");
+        showApiMessage(describeError(error), "error");
     }
 }
 
@@ -936,6 +962,7 @@ function bindEvents() {
     for (index = 0; index < copies.length; index++) {
         copies[index].addEventListener("click", handleApiCopy);
     }
+    byId("open-api").addEventListener("click", handleApi);
     byId("api-documentation").addEventListener("click", handleApiDocumentation);
     byId("service-list").addEventListener("click", handleServiceSelect);
     byId("new-service").addEventListener("click", handleNew);

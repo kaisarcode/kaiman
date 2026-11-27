@@ -238,18 +238,12 @@ select:focus-visible {
     overflow: auto;
 }
 
-.gateway-column {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    min-width: 0;
-    min-height: 0;
-    overflow: auto;
+#open-api {
+    color: var(--link);
 }
 
-.gateway-column > .panel {
-    flex: none;
-    overflow: visible;
+#open-api:hover:not(:disabled) {
+    color: var(--foreground);
 }
 
 .panel-heading > svg,
@@ -296,9 +290,12 @@ select:focus-visible {
 .api-list {
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    overflow: auto;
 }
 
 .api-endpoint {
+    flex: none;
     display: grid;
     grid-template-columns: 42px minmax(0, 1fr) 28px;
     gap: var(--space-2);
@@ -555,6 +552,34 @@ select:focus-visible {
     padding: var(--space-4);
 }
 
+.api-dialog {
+    width: min(560px, calc(100% - 32px));
+    overflow: auto;
+}
+
+.api-dialog[open] {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.api-dialog > :not(.api-list) {
+    flex: none;
+}
+
+.api-dialog #api-status {
+    margin: var(--space-2) 0 0;
+    font-size: 12px;
+}
+
+#api-status[data-kind="success"] {
+    color: var(--success);
+}
+
+#api-status[data-kind="error"] {
+    color: var(--error);
+}
+
 .dialog::backdrop {
     background: rgba(0, 0, 0, 0.65);
 }
@@ -771,9 +796,8 @@ select:focus-visible {
         overflow: visible;
     }
 
-    .gateway-column {
+    .panel-gateway {
         grid-column: 1 / -1;
-        overflow: visible;
     }
 }
 
@@ -791,7 +815,7 @@ select:focus-visible {
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .gateway-column {
+    .panel-gateway {
         grid-column: auto;
     }
 

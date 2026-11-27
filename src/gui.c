@@ -1358,7 +1358,7 @@ int kc_kaiman_gui_run(void) {
     FILE *focus;
     const char *detail;
     int width = 1120;
-    int height = 760;
+    int height = 570;
     int hide_on_close = 1;
     int running;
     double next_status = 0.0;
