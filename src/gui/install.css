@@ -1,5 +1,5 @@
 body.installer {
-    min-height: 360px;
+    min-height: 100%;
     min-width: 320px;
     height: auto;
     background: var(--panel);
@@ -93,4 +93,8 @@ body.installer {
 
 #install-result[data-kind="success"] {
     color: var(--success);
+}
+
+.installer-loading > * {
+    visibility: hidden;
 }

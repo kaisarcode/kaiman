@@ -107,13 +107,16 @@ async function run() {
         if (!window.NativeBridge || !window.NativeBridge.directory) {
             throw new Error("Native bridge unavailable.");
         }
-        await window.NativeBridge.ready();
         directory.value = await window.NativeBridge.directory();
         button.disabled = false;
         browse.disabled = false;
     } catch (error) {
         showResult(error.message || "Installer initialization failed.", false);
     }
+    if (window.NativeBridge && window.NativeBridge.ready) {
+        await window.NativeBridge.ready();
+    }
+    document.body.classList.remove("installer-loading");
 }
 
 run();

@@ -43,11 +43,15 @@
 #define INSTALL_ICON "gui/tray-started.png"
 #endif
 
+#define INSTALL_WIDTH 460
+#define INSTALL_HEIGHT 440
+
 typedef struct {
     char *source;
     char *directory;
     char *response;
     atomic_int stop;
+    atomic_int ready;
 } kc_install_t;
 
 static const char *const install_files[] = {
@@ -456,10 +460,12 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
 
         if (monitor != NULL) {
             gdk_monitor_get_workarea(monitor, &area);
-            (void)kc_wvw_set_position(wvw, area.x + (area.width - 460) / 2,
-                area.y + (area.height - 360) / 2);
+            (void)kc_wvw_set_position(wvw,
+                area.x + (area.width - INSTALL_WIDTH) / 2,
+                area.y + (area.height - INSTALL_HEIGHT) / 2);
         }
 #endif
+        atomic_store(&state->ready, 1);
     } else if (strcmp(method, "install") == 0) {
         if (params_json == NULL || kc_json_parse(params_json,
             strlen(params_json), &params) != KC_KAIMAN_OK) {
@@ -528,9 +534,11 @@ int main(void) {
     kc_wvw_t *wvw = NULL;
     char *url = NULL;
     char *icon = NULL;
-    int width = 460;
-    int height = 360;
+    int width = INSTALL_WIDTH;
+    int height = INSTALL_HEIGHT;
     int borderless = 1;
+    int hidden = 1;
+    double deadline;
     int hide_on_close = 1;
     int result = 1;
     const char *detail = "unable to resolve installer assets";
@@ -567,6 +575,7 @@ int main(void) {
     options.width = &width;
     options.height = &height;
     options.borderless = &borderless;
+    options.hidden = &hidden;
     options.background = "141715";
     options.hide_on_close = &hide_on_close;
     options.allow_file = 1;
@@ -591,6 +600,14 @@ int main(void) {
     if (kc_wvw_set_bridge_methods(wvw, &bridge) != KC_WVW_OK) goto done;
     detail = "unable to load installer interface";
     if (kc_wvw_navigate(wvw, url) != KC_WVW_OK) goto done;
+    detail = "installer interface did not initialize";
+    deadline = kc_util_seconds() + 15.0;
+    while (!atomic_load(&state.ready) && kc_util_seconds() < deadline) {
+        kc_util_sleep(25);
+    }
+    if (!atomic_load(&state.ready)) goto done;
+    detail = "unable to show installer window";
+    if (kc_wvw_show(wvw) != KC_WVW_OK) goto done;
     while (!atomic_load(&state.stop) && kc_wvw_is_visible(wvw) == 1) {
         kc_util_sleep(50);
     }
