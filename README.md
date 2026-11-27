@@ -5,6 +5,8 @@ services. It keeps one configuration for several projects, stores credential
 references instead of secrets, and exposes configured services through one
 OpenAI-compatible HTTP endpoint.
 
+![kaiman desktop interface](screenshot.png)
+
 The library is the product. The CLI is a thin frontend built on the same public
 API, so another application can manage services without spawning a process.
 
