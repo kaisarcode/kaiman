@@ -4,7 +4,8 @@ body.installer {
     height: auto;
     background: var(--panel);
     border: 1px solid var(--border);
-    padding: 12px var(--space-5);
+    padding: var(--space-5);
+    align-items: center;
     position: relative;
 }
 
@@ -15,7 +16,10 @@ body.installer {
 }
 
 .installer-brand {
+    flex: none;
+    width: 100%;
     text-align: center;
+    margin-top: auto;
     margin-bottom: var(--space-3);
 }
 
@@ -40,6 +44,9 @@ body.installer {
 }
 
 #install-form {
+    flex: none;
+    width: 100%;
+    margin-bottom: auto;
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
