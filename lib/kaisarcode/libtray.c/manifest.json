@@ -1,0 +1,9 @@
+{
+  "name": "libtray",
+  "version": "1.0.0",
+  "description": "Provides a persistent native system tray and mutable menu items with callbacks.",
+  "author": "KaisarCode",
+  "license": "LGPL-3.0-only",
+  "website": "https://kaisarcode.com",
+  "repository": "https://gitlab.com/kaisarcode/libtray.c"
+}

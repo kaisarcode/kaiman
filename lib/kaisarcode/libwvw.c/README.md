@@ -27,7 +27,8 @@ if (kc_wvw_open(&window, &options) == KC_WVW_OK) {
 ```
 
 The URL is required. Omitted size values default to 1280x720 and omitted
-boolean options are false.
+boolean options are false. With `hide_on_close`, a native close request hides
+the window instead of closing it, so the application can show it again later.
 
 ## Execute registered desktop programs
 

@@ -469,6 +469,7 @@ typedef struct {
     int no_focus;
     int hidden;
     int unlist;
+    int hide_on_close;
     int allow_file;
     int allow_data;
     int allow_localhost;
@@ -1217,6 +1218,8 @@ static int kc_wvw_config_copy(kc_wvw_config_t *config, const kc_wvw_options_t *o
     config->no_focus = options->no_focus ? !!*options->no_focus : 0;
     config->hidden = options->hidden ? !!*options->hidden : 0;
     config->unlist = options->unlist ? !!*options->unlist : 0;
+    config->hide_on_close = options->hide_on_close ?
+        !!*options->hide_on_close : 0;
     config->allow_file = !!options->allow_file;
     config->allow_data = !!options->allow_data;
     config->allow_localhost = !!options->allow_localhost;
@@ -2488,6 +2491,8 @@ static int kc_wvw_flush_pending_navigation(kc_wvw_t *ctx) {
     return FAILED(hr) ? KC_WVW_ERROR : KC_WVW_OK;
 }
 
+static int kc_wvw_hide_impl(kc_wvw_t *ctx);
+
 /**
  * Performs UI-thread shutdown for the host window.
  * @param ctx Window context.
@@ -2575,6 +2580,10 @@ static LRESULT CALLBACK kc_wvw_window_proc(HWND hwnd, UINT msg, WPARAM wparam, L
         }
         return DefWindowProcW(hwnd, msg, wparam, lparam);
     case WM_CLOSE:
+        if (ctx && ctx->opts.hide_on_close) {
+            kc_wvw_hide_impl(ctx);
+            return 0;
+        }
         kc_wvw_request_close(ctx);
         return 0;
     case KC_WVW_CLOSE_MESSAGE:
@@ -3852,6 +3861,7 @@ typedef struct {
     int width, height, posx, posy;
     int has_posx, has_posy;
     int fullscreen, borderless, always_on_top, click_through, no_focus, hidden, unlist;
+    int hide_on_close;
     int allow_file, allow_data, allow_localhost;
 } kc_wvw_config_t;
 typedef struct {
@@ -4130,6 +4140,8 @@ static int kc_wvw_config_copy(kc_wvw_config_t *config, const kc_wvw_options_t *o
     config->no_focus = options->no_focus ? !!*options->no_focus : 0;
     config->hidden = options->hidden ? !!*options->hidden : 0;
     config->unlist = options->unlist ? !!*options->unlist : 0;
+    config->hide_on_close = options->hide_on_close ?
+        !!*options->hide_on_close : 0;
     config->allow_file = !!options->allow_file;
     config->allow_data = !!options->allow_data;
     config->allow_localhost = !!options->allow_localhost;
@@ -5195,7 +5207,7 @@ static char *kc_wvw_bridge_dispatch_request(kc_wvw_t *ctx, const char *json) {
  * @param ctx Window context.
  * @return None.
  */
-static void kc_wvw_request_close(kc_wvw_t *ctx){if(ctx&&ctx->ns_window){@autoreleasepool{[(__bridge NSWindow *)ctx->ns_window close];}}}
+static void kc_wvw_request_close(kc_wvw_t *ctx){if(ctx&&ctx->ns_window){@autoreleasepool{ctx->closing=1;[(__bridge NSWindow *)ctx->ns_window close];}}}
 static int kc_wvw_macos_create_window(kc_wvw_t *ctx);
 
 /**
@@ -5358,6 +5370,13 @@ static int kc_wvw_background_transparent(const char *text) {
 @end
 
 @implementation KCWvwWindowDelegate
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    if (self.ctx && !self.ctx->closing && self.ctx->opts.hide_on_close) {
+        [sender orderOut:nil];
+        return NO;
+    }
+    return YES;
+}
 - (void)windowWillClose:(NSNotification *)notification {
     (void)notification;
     if (!self.ctx) {
@@ -6163,6 +6182,23 @@ static void kc_wvw_linux_destroy(GtkWidget *widget, gpointer userdata) {
 }
 
 /**
+ * Hide instead of destroying a window configured to survive close requests.
+ * @param widget GTK widget.
+ * @param event GTK event, unused.
+ * @param userdata Window context.
+ * @return TRUE when the request was handled, otherwise FALSE.
+ */
+static gboolean kc_wvw_linux_delete(GtkWidget *widget, GdkEvent *event,
+    gpointer userdata) {
+    kc_wvw_t *ctx = (kc_wvw_t *)userdata;
+
+    (void)event;
+    if (ctx == NULL || !ctx->opts.hide_on_close) return FALSE;
+    gtk_widget_hide(widget);
+    return TRUE;
+}
+
+/**
  * Handle one message received from the injected NativeBridge runtime.
  * @param manager User content manager.
  * @param js_result JavaScript result.
@@ -6386,6 +6422,8 @@ static int kc_wvw_linux_create_window(kc_wvw_t *ctx) {
 
     gtk_container_add(GTK_CONTAINER(ctx->window), GTK_WIDGET(ctx->web_view));
     g_signal_connect(ctx->window, "destroy", G_CALLBACK(kc_wvw_linux_destroy), ctx);
+    g_signal_connect(ctx->window, "delete-event",
+        G_CALLBACK(kc_wvw_linux_delete), ctx);
     g_signal_connect(ctx->window, "size-allocate", G_CALLBACK(kc_wvw_linux_size_allocate), ctx);
     g_signal_connect(ctx->window, "configure-event", G_CALLBACK(kc_wvw_linux_configure), ctx);
     if (!ctx->opts.hidden) {

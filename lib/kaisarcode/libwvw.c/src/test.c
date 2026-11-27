@@ -372,6 +372,42 @@ static void case_kc_wvw_visibility(void) {
 }
 
 /**
+ * Test that hide_on_close keeps the window operational and explicit close wins.
+ * @return None.
+ */
+static void case_kc_wvw_hide_on_close(void) {
+    kc_wvw_options_t options = {0};
+    kc_wvw_t *wvw = NULL;
+    char *url = test_url();
+    int width = 640;
+    int height = 480;
+    int hide_on_close = 1;
+    int ok = url != NULL;
+
+    if (ok) {
+        options.url = url;
+        options.title = "wvw test";
+        options.width = &width;
+        options.height = &height;
+        options.hide_on_close = &hide_on_close;
+        options.allow_file = 1;
+        ok = kc_wvw_open(&wvw, &options) == KC_WVW_OK;
+    }
+    if (ok) {
+        ok =
+            kc_wvw_is_visible(wvw) == 1 &&
+            kc_wvw_hide(wvw) == KC_WVW_OK &&
+            kc_wvw_is_visible(wvw) == 0 &&
+            kc_wvw_show(wvw) == KC_WVW_OK &&
+            kc_wvw_is_visible(wvw) == 1;
+    }
+    kc_wvw_close(wvw);
+    free(url);
+    result("kc_wvw_hide_on_close",
+        "hide_on_close preserves the window and explicit close still works", ok);
+}
+
+/**
  * Test minimize, maximize, and restore actions.
  * @return None.
  */
@@ -502,7 +538,7 @@ static void run_all(void) {
 #ifdef __EMSCRIPTEN__
     total = 10;
 #else
-    total = 12;
+    total = 13;
 #endif
     case_kc_wvw_version();
     case_kc_wvw_open();
@@ -512,6 +548,9 @@ static void run_all(void) {
     case_kc_wvw_exec();
 #endif
     case_kc_wvw_visibility();
+#ifndef __EMSCRIPTEN__
+    case_kc_wvw_hide_on_close();
+#endif
     case_kc_wvw_actions();
     case_kc_wvw_title();
     case_kc_wvw_size();

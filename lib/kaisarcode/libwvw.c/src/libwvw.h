@@ -50,6 +50,7 @@ typedef struct {
     const int *no_focus;
     const int *hidden;
     const int *unlist;
+    const int *hide_on_close;
     int allow_file;
     int allow_data;
     int allow_localhost;
@@ -72,6 +73,8 @@ typedef struct {
  * Strings and scalar option values are copied before return.
  * URL is required. Omitted width and height use 1280x720.
  * Omitted positions use native placement. Boolean defaults are false.
+ * When `hide_on_close` is true, a native close request hides the window instead
+ * of closing it; an explicit `kc_wvw_close()` still closes the window.
  * @param out Output WebView handle, set to NULL on failure.
  * @param options Initial window and WebView options.
  * @return KC_WVW_OK on success, or KC_WVW_ERROR on failure.

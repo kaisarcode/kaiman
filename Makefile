@@ -140,7 +140,7 @@ $(eval $(call android_target,armv7,armv7a-linux-androideabi))
 DEP_ROOT := lib/kaisarcode
 DEP_NAMES := http netl tls
 ifneq ($(strip $(TARGET_GUI)),)
-DEP_NAMES += wvw
+DEP_NAMES += wvw tray
 endif
 TLS_SHARED_NAME := libtls.so
 TLS_IMPORT_NAME :=

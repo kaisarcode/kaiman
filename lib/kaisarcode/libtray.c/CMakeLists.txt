@@ -1,0 +1,185 @@
+# CMakeLists.txt
+# Summary: Cross-compilation builder for tray.
+#
+# Author:  KaisarCode
+# Website: https://kaisarcode.com
+# License: https://www.gnu.org/licenses/lgpl-3.0.html
+
+cmake_minimum_required(VERSION 3.14)
+project(tray C)
+
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json" KC_VERSION_LINE
+    REGEX "^[ \t]*\"version\"[ \t]*:")
+string(REGEX REPLACE
+    ".*\"version\"[ \t]*:[ \t]*\"([^\"]+)\".*" "\\1"
+    KC_VERSION "${KC_VERSION_LINE}")
+if(NOT KC_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$")
+    message(FATAL_ERROR "Invalid semantic version in manifest.json")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/manifest.json")
+add_compile_definitions("KC_MANIFEST_VERSION=\"${KC_VERSION}\"")
+
+add_compile_definitions("KC_MANIFEST_VERSION=\"${KC_VERSION}\"")
+
+set(CMAKE_C_STANDARD 11)
+
+option(LIBTRAY_NATIVE "Enable native hardware optimizations" OFF)
+option(TRAY_BUILD_TESTS "Build tray tests" OFF)
+
+set(TRAY_TEST_EXTERNAL_ARTIFACTS OFF)
+if(TRAY_BUILD_TESTS AND TRAY_TEST_SHARED_LIBRARY)
+    set(TRAY_TEST_EXTERNAL_ARTIFACTS ON)
+endif()
+
+if(NOT MSVC)
+    add_compile_options(-O3 -Wall -Wextra -Werror)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        add_compile_options(-Wno-unused-command-line-argument)
+    endif()
+    if(LIBTRAY_NATIVE)
+        add_compile_options(-march=native)
+    endif()
+    add_definitions(-D_GNU_SOURCE)
+else()
+    add_compile_options(/O2 /W3 /WX)
+endif()
+
+if(NOT TRAY_TEST_EXTERNAL_ARTIFACTS)
+    if(WIN32)
+        set(TRAY_SOURCES src/libtray.c)
+
+
+set_source_files_properties(src/libtray.c PROPERTIES
+            COMPILE_DEFINITIONS "KC_TRAY_VERSION=\"${KC_VERSION}\""
+        )
+
+        add_library(tray_static STATIC ${TRAY_SOURCES})
+        set_target_properties(tray_static PROPERTIES OUTPUT_NAME "tray")
+        target_include_directories(tray_static PRIVATE src)
+        target_link_libraries(tray_static user32 shell32)
+
+        add_library(tray_shared SHARED ${TRAY_SOURCES})
+        set_target_properties(tray_shared PROPERTIES OUTPUT_NAME "tray")
+        set_target_properties(tray_shared PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+        target_include_directories(tray_shared PRIVATE src)
+        target_link_libraries(tray_shared user32 shell32)
+    else()
+        set(TRAY_SOURCES src/libtray.c)
+        set_source_files_properties(src/libtray.c PROPERTIES
+            COMPILE_DEFINITIONS "KC_TRAY_VERSION=\"${KC_VERSION}\""
+        )
+
+        if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+            if(NOT CMAKE_OBJC_COMPILER AND CMAKE_C_COMPILER)
+                set(CMAKE_OBJC_COMPILER "${CMAKE_C_COMPILER}" CACHE FILEPATH
+                    "Objective-C compiler")
+            endif()
+            enable_language(OBJC)
+            set_source_files_properties(src/libtray.c PROPERTIES
+                LANGUAGE OBJC
+            )
+            add_library(tray_static STATIC ${TRAY_SOURCES})
+            set_target_properties(tray_static PROPERTIES OUTPUT_NAME "tray")
+            target_include_directories(tray_static PRIVATE src)
+            target_link_libraries(tray_static pthread m)
+
+            add_library(tray_shared SHARED ${TRAY_SOURCES})
+            set_target_properties(tray_shared PROPERTIES OUTPUT_NAME "tray")
+            set_target_properties(tray_shared PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
+            target_include_directories(tray_shared PRIVATE src)
+            target_link_libraries(tray_shared "-framework Cocoa" "-framework Foundation" pthread m)
+        else()
+            find_package(PkgConfig REQUIRED)
+            pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
+
+            add_library(tray_static STATIC ${TRAY_SOURCES})
+            set_target_properties(tray_static PROPERTIES OUTPUT_NAME "tray")
+            target_include_directories(tray_static PRIVATE src ${GTK3_INCLUDE_DIRS})
+            target_compile_options(tray_static PRIVATE ${GTK3_CFLAGS_OTHER})
+            target_link_directories(tray_static PRIVATE ${GTK3_LIBRARY_DIRS})
+            target_link_libraries(tray_static ${GTK3_LIBRARIES} pthread m dl)
+
+            add_library(tray_shared SHARED ${TRAY_SOURCES})
+            set_target_properties(tray_shared PROPERTIES OUTPUT_NAME "tray")
+            target_include_directories(tray_shared PRIVATE src ${GTK3_INCLUDE_DIRS})
+            target_compile_options(tray_shared PRIVATE ${GTK3_CFLAGS_OTHER})
+            target_link_directories(tray_shared PRIVATE ${GTK3_LIBRARY_DIRS})
+            target_link_libraries(tray_shared ${GTK3_LIBRARIES} pthread m dl)
+        endif()
+    endif()
+endif()
+
+if(TRAY_BUILD_TESTS)
+    if(TRAY_TEST_SHARED_LIBRARY)
+        add_library(tray_test_shared SHARED IMPORTED)
+        set_target_properties(tray_test_shared PROPERTIES
+            IMPORTED_LOCATION "${TRAY_TEST_SHARED_LIBRARY}"
+        )
+        if(TRAY_TEST_IMPORT_LIBRARY)
+            set_target_properties(tray_test_shared PROPERTIES
+                IMPORTED_IMPLIB "${TRAY_TEST_IMPORT_LIBRARY}"
+            )
+        endif()
+        set(TRAY_TEST_SHARED_TARGET tray_test_shared)
+    else()
+        set(TRAY_TEST_SHARED_TARGET tray_shared)
+    endif()
+
+    add_executable(tray_contract_test src/test.c)
+    if(APPLE)
+        set_source_files_properties(src/test.c PROPERTIES LANGUAGE OBJC)
+        target_link_libraries(tray_contract_test PRIVATE "-framework Cocoa")
+    endif()
+    target_include_directories(tray_contract_test PRIVATE src)
+    target_link_libraries(tray_contract_test PRIVATE ${TRAY_TEST_SHARED_TARGET})
+    if(TRAY_CLI_PATH)
+        target_compile_definitions(tray_contract_test PRIVATE
+            KC_CLI_PATH="${TRAY_CLI_PATH}"
+        )
+    endif()
+
+    if(UNIX AND NOT ANDROID AND NOT APPLE)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(GTK3_TEST gtk+-3.0)
+        target_include_directories(tray_contract_test PRIVATE ${GTK3_TEST_INCLUDE_DIRS})
+        target_compile_options(tray_contract_test PRIVATE ${GTK3_TEST_CFLAGS_OTHER})
+        target_link_directories(tray_contract_test PRIVATE ${GTK3_TEST_LIBRARY_DIRS})
+        target_link_libraries(tray_contract_test PRIVATE ${GTK3_TEST_LIBRARIES} pthread m dl)
+    endif()
+
+    if(WIN32)
+        target_link_libraries(tray_contract_test PRIVATE user32 shell32)
+    endif()
+
+    add_custom_command(TARGET tray_contract_test POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:${TRAY_TEST_SHARED_TARGET}>
+            $<TARGET_FILE_DIR:tray_contract_test>
+    )
+
+endif()
+# Build the command-line frontend against the shared library.
+if(TARGET tray_static AND NOT EMSCRIPTEN AND
+    NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    add_executable(tray_cli src/tray.c)
+    set_target_properties(tray_cli PROPERTIES
+        OUTPUT_NAME "tray"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}"
+    )
+    target_include_directories(tray_cli PRIVATE src)
+    target_link_libraries(tray_cli PRIVATE tray_static)
+    if(APPLE)
+        set_source_files_properties(src/tray.c PROPERTIES LANGUAGE OBJC)
+        target_link_libraries(tray_cli PRIVATE "-framework Cocoa")
+        set_target_properties(tray_cli PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@loader_path"
+        )
+    elseif(UNIX)
+        set_target_properties(tray_cli PROPERTIES
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "$ORIGIN"
+        )
+    endif()
+endif()

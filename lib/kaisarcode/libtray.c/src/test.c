@@ -1,0 +1,385 @@
+/**
+ * test.c - libtray public API tests.
+ * Summary: Exercises tray ownership, native updates, and callbacks.
+ *
+ * Author:  KaisarCode
+ * Website: https://kaisarcode.com
+ * License: https://www.gnu.org/licenses/lgpl-3.0.html
+ */
+
+#include "libtray.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+#include <time.h>
+#include <stdatomic.h>
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__)
+#import <Cocoa/Cocoa.h>
+#else
+#include <unistd.h>
+#endif
+
+static int current, total, failures;
+
+#ifndef __EMSCRIPTEN__
+static int case_tray_cli(void);
+#endif
+
+/**
+ * Print and count one contract test result.
+ * @param name Case or program name.
+ * @param detail Test description.
+ * @param ok Test result.
+ * @return None.
+ */
+static void result(const char *name, const char *detail, int ok) {
+    current++;
+    if (!ok) failures++;
+    printf("[%d/%d] [%s] %s: %s\n", current, total,
+            ok ? "PASS" : "FAIL", name, detail);
+}
+
+/**
+ * Compare two non-NULL strings.
+ * @param a First string or item.
+ * @param b Second string or item.
+ * @return Nonzero when the strings match.
+ */
+static int same(const char *a, const char *b) {
+    return a && b && strcmp(a, b) == 0;
+}
+
+/**
+ * Check the generated version.
+ * @return None.
+ */
+static void case_version(void) {
+    const char *version = kc_tray_version();
+    int ok = version != NULL && strcmp(version, KC_MANIFEST_VERSION) == 0;
+
+    if (!ok) {
+        printf("[FAIL] tray version mismatch: expected 1.0.0, got '%s'\n",
+            version != NULL ? version : "(null)");
+    }
+    result("version", "returns semantic version", ok);
+}
+
+/**
+ * Check tray creation and destruction.
+ * @return None.
+ */
+static void case_open_close(void) {
+    kc_tray_t *t = (kc_tray_t *)(uintptr_t)1;
+    int ok = kc_tray_open(NULL, NULL) == KC_TRAY_ERROR;
+    ok &= kc_tray_open(&t, NULL) == KC_TRAY_OK && t != NULL;
+    kc_tray_close(t == (kc_tray_t *)(uintptr_t)1 ? NULL : t);
+    kc_tray_close(NULL);
+    result("open_close", "open is nonblocking and close ends ownership", ok);
+}
+
+/**
+ * Check copies of initial options.
+ * @return None.
+ */
+static void case_options(void) {
+    kc_tray_t *t = NULL;
+    char tip[] = "Initial tooltip";
+    kc_tray_options_t options = {NULL, tip};
+    int ok = kc_tray_open(&t, &options) == KC_TRAY_OK;
+    if (ok) {
+        tip[0] = 'X';
+        ok = same(kc_tray_get_tooltip(t), "Initial tooltip") &&
+                kc_tray_get_icon(t) == NULL;
+        kc_tray_close(t);
+    }
+    result("options", "initial strings are copied and NULL options are valid", ok);
+}
+
+/**
+ * Check native icon updates and the getter.
+ * @return None.
+ */
+static void case_icon(void) {
+    kc_tray_t *t = NULL;
+    const char *icon = NULL;
+#if defined(_WIN32)
+    static const unsigned char ico[70] = {
+        0,0,1,0,1,0,1,1,0,0,1,0,32,0,48,0,
+        0,0,22,0,0,0,40,0,0,0,1,0,0,0,2,0,
+        0,0,1,0,32,0,0,0,0,0,8,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+        255,255,0,0,0,0
+    };
+    char path[MAX_PATH] = {0};
+    char dir[MAX_PATH];
+    FILE *file = NULL;
+    if (GetTempPathA(MAX_PATH, dir) && GetTempFileNameA(dir, "ktr", 0, path)) {
+        file = fopen(path, "wb");
+        if (file) { fwrite(ico, 1, sizeof(ico), file); fclose(file); icon = path; }
+    }
+#elif defined(__APPLE__)
+    icon = "NSApplicationIcon";
+#else
+    icon = "emblem-system";
+#endif
+    int ok = kc_tray_open(&t, NULL) == KC_TRAY_OK;
+    if (ok) {
+        ok = icon && kc_tray_get_icon(t) == NULL &&
+                kc_tray_set_icon(t, icon) == KC_TRAY_OK &&
+                same(kc_tray_get_icon(t), icon) &&
+                kc_tray_set_icon(t, NULL) == KC_TRAY_OK &&
+                kc_tray_get_icon(t) == NULL;
+        kc_tray_close(t);
+    }
+#if defined(_WIN32)
+    if (path[0]) DeleteFileA(path);
+#endif
+    result("icon", "native icon reset and borrowed getter", ok);
+}
+
+/**
+ * Check native tooltip updates and the getter.
+ * @return None.
+ */
+static void case_tooltip(void) {
+    kc_tray_t *t = NULL;
+    int ok = kc_tray_open(&t, NULL) == KC_TRAY_OK;
+    if (ok) {
+        char tip[] = "Updated";
+        ok = kc_tray_set_tooltip(t, tip) == KC_TRAY_OK;
+        tip[0] = 'X';
+        ok &= same(kc_tray_get_tooltip(t), "Updated");
+        ok &= kc_tray_set_tooltip(t, NULL) == KC_TRAY_OK &&
+                kc_tray_get_tooltip(t) == NULL;
+        kc_tray_close(t);
+    }
+    result("tooltip", "native tooltip update, copy and clear", ok);
+}
+static atomic_int callback_stage;
+static _Atomic(kc_tray_item_t *) expected_first, expected_once, expected_quit;
+static _Atomic(kc_tray_t *) closing_tray;
+
+/**
+ * Record the exact item activated by a menu selection.
+ * @param item Item handle.
+ * @param data Callback data.
+ * @return None.
+ */
+static void record(kc_tray_item_t *item, void *data) {
+    (void)data;
+    if (item == atomic_load(&expected_first)) atomic_store(&callback_stage, 1);
+}
+
+/**
+ * Remove the activated item from its own callback.
+ * @param item Item handle.
+ * @param data Callback data.
+ * @return None.
+ */
+static void remove_self(kc_tray_item_t *item, void *data) {
+    (void)data;
+    if (item == atomic_load(&expected_once) && atomic_load(&callback_stage) == 1)
+        atomic_store(&callback_stage, 2);
+    kc_tray_item_remove(item);
+}
+
+/**
+ * Close a tray from one of its item callbacks.
+ * @param item Item handle.
+ * @param data Callback data.
+ * @return None.
+ */
+static void close_from_callback(kc_tray_item_t *item, void *data) {
+    kc_tray_t *t;
+    (void)data;
+    if (item == atomic_load(&expected_quit) && atomic_load(&callback_stage) == 2)
+        atomic_store(&callback_stage, 3);
+    t = atomic_exchange(&closing_tray, NULL);
+    kc_tray_close(t);
+#if defined(__APPLE__)
+    [NSApp stop:nil];
+#endif
+}
+
+/**
+ * Check item mutation, separators, and removal.
+ * @return None.
+ */
+static void case_items(void) {
+    kc_tray_t *t = NULL;
+    kc_tray_item_t *a = NULL, *sep = NULL;
+    int ok = kc_tray_open(&t, NULL) == KC_TRAY_OK;
+    if (ok) {
+        ok = kc_tray_add_item(t, &a, "First", record, NULL) == KC_TRAY_OK &&
+                a && same(kc_tray_item_get_text(a), "First");
+        ok &= kc_tray_add_separator(t, &sep) == KC_TRAY_OK && sep &&
+                kc_tray_item_get_text(sep) == NULL;
+        if (a) {
+            ok &= kc_tray_item_set_text(a, "Second") == KC_TRAY_OK &&
+                    same(kc_tray_item_get_text(a), "Second");
+            ok &= kc_tray_item_set_text(a, NULL) == KC_TRAY_ERROR;
+            kc_tray_item_remove(a);
+        }
+        kc_tray_item_remove(sep);
+        kc_tray_item_remove(NULL);
+        kc_tray_close(t);
+    }
+    result("items", "add, set/get text, separator and remove", ok);
+}
+
+/**
+ * Check that closing a tray destroys its children.
+ * @return None.
+ */
+static void case_lifecycle(void) {
+    kc_tray_t *t = NULL;
+    kc_tray_item_t *a = NULL, *b = NULL;
+    int ok = kc_tray_open(&t, NULL) == KC_TRAY_OK;
+    if (ok) {
+        ok = kc_tray_add_item(t, &a, "A", NULL, NULL) == KC_TRAY_OK &&
+                kc_tray_add_item(t, &b, "B", NULL, NULL) == KC_TRAY_OK;
+        kc_tray_close(t);
+    }
+    result("lifecycle", "tray close destroys all children", ok);
+}
+
+/**
+ * Check the contextual error getter.
+ * @return None.
+ */
+static void case_error(void) {
+    kc_tray_t *t = NULL;
+    int ok = kc_tray_get_error(NULL) == NULL &&
+                kc_tray_open(&t, NULL) == KC_TRAY_OK;
+    if (ok) {
+        kc_tray_item_t *invalid = (kc_tray_item_t *)(uintptr_t)1;
+        ok = kc_tray_get_error(t) == NULL &&
+                kc_tray_add_item(t, &invalid, "", NULL, NULL) == KC_TRAY_ERROR &&
+                invalid == NULL && kc_tray_get_error(t) != NULL;
+        kc_tray_close(t);
+    }
+    result("error", "context error after rejected input", ok);
+}
+
+/**
+ * Check actual native menu callbacks interactively.
+ * @return None.
+ */
+static void case_callbacks(void) {
+    kc_tray_t *t = NULL;
+    kc_tray_item_t *first = NULL, *once = NULL, *quit = NULL;
+    int ok = kc_tray_open(&t, NULL) == KC_TRAY_OK;
+    atomic_store(&callback_stage, 0);
+    atomic_store(&closing_tray, t);
+    if (ok) {
+        ok &= kc_tray_add_item(t, &first, "1. Select me", record, NULL) == 0;
+        ok &= kc_tray_add_item(t, &once, "2. Remove me", remove_self, NULL) == 0;
+        ok &= kc_tray_add_item(t, &quit, "3. Close tray", close_from_callback, NULL) == 0;
+        atomic_store(&expected_first, first);
+        atomic_store(&expected_once, once);
+        atomic_store(&expected_quit, quit);
+        if (ok) {
+            fprintf(stderr, "Select 1, 2, 3 in the tray menu (30 seconds).\n");
+#if defined(__APPLE__)
+            [NSTimer scheduledTimerWithTimeInterval:30.0 target:NSApp
+                        selector:@selector(stop:) userInfo:nil repeats:NO];
+            [NSApp run];
+#else
+            for (int i = 0; i < 300 && atomic_load(&closing_tray); i++) {
+#if defined(_WIN32)
+                Sleep(100);
+#else
+                struct timespec ts = {0, 100000000};
+                nanosleep(&ts, NULL);
+#endif
+            }
+#endif
+            ok = atomic_load(&callback_stage) == 3 &&
+                    atomic_load(&closing_tray) == NULL;
+        }
+        t = atomic_exchange(&closing_tray, NULL);
+        if (t) kc_tray_close(t);
+    }
+    result("callbacks", "exact item, self removal and close from callback", ok);
+}
+
+/**
+ * Run the tray contract tests.
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @return Process status or test result.
+ */
+int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "interactive") == 0) {
+        total = 1; case_callbacks(); return failures ? 1 : 0;
+    }
+    if (argc != 2 || strcmp(argv[1], "all") != 0) return 2;
+#ifdef __EMSCRIPTEN__
+    total = 8;
+#else
+    total = 15;
+#endif
+    case_version(); case_open_close(); case_options(); case_icon();
+    case_tooltip(); case_items(); case_lifecycle(); case_error();
+#ifndef __EMSCRIPTEN__
+    (void)case_tray_cli();
+#endif
+    printf("%d passed, %d failed\n", total - failures, failures);
+    return failures ? 1 : 0;
+}
+
+#ifndef __EMSCRIPTEN__
+#ifndef KC_CLI_PATH
+#define KC_CLI_PATH "tray"
+#endif
+
+/**
+ * Runs tray with one argument string.
+ * @param args Command arguments.
+ * @return Shell exit status.
+ */
+static int tray_cli_run(const char *args) {
+    char command[4096];
+
+#ifdef _WIN32
+    snprintf(command, sizeof(command), "\"\"%s\" %s > NUL 2>&1\"",
+        KC_CLI_PATH, args ? args : "");
+#else
+    snprintf(command, sizeof(command), "\"%s\" %s > /dev/null 2>&1",
+        KC_CLI_PATH, args ? args : "");
+#endif
+    return system(command);
+}
+
+/**
+ * Prints one tray CLI result using the shared test counter.
+ * @param name Test name.
+ * @param detail Tested behavior.
+ * @param ok Nonzero when the test passed.
+ * @return None.
+ */
+static void tray_cli_result(const char *name, const char *detail, int ok) {
+    result(name, detail, ok);
+}
+
+/**
+ * Runs the tray CLI contract tests.
+ * @return Zero when every test passes.
+ */
+static int case_tray_cli(void) {
+    tray_cli_result("help", "--help succeeds", tray_cli_run("--help") == 0);
+    tray_cli_result("version", "--version succeeds",
+        tray_cli_run("--version") == 0);
+    tray_cli_result("unknown", "unknown options fail", tray_cli_run("--bad") != 0);
+    tray_cli_result("icon", "--icon requires a value", tray_cli_run("--icon") != 0);
+    tray_cli_result("tooltip", "--tooltip requires a value",
+        tray_cli_run("--tooltip") != 0);
+    tray_cli_result("item", "--item requires text and command",
+        tray_cli_run("--item label") != 0);
+    tray_cli_result("quit", "--quit requires a label", tray_cli_run("--quit") != 0);
+    return failures ? 1 : 0;
+}
+#endif

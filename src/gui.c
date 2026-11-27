@@ -11,6 +11,7 @@
 
 #include "json.h"
 #include "libkaiman.h"
+#include "libtray.h"
 #include "libwvw.h"
 #include "util.h"
 
@@ -33,6 +34,9 @@
 
 typedef struct {
     volatile sig_atomic_t stop;
+    kc_wvw_t *wvw;
+    kc_tray_t *tray;
+    kc_tray_item_t *toggle;
 } kc_gui_state_t;
 
 static kc_gui_state_t *kc_gui_active = NULL;
@@ -558,6 +562,66 @@ static int bridge_quit(kc_gui_state_t *state) {
 }
 
 /**
+ * Report whether the gateway is currently running.
+ * @return 1 when running, otherwise 0.
+ */
+static int gateway_running(void) {
+    char *description = NULL;
+    int running = 0;
+
+    if (kc_kaiman_status(&description) == KC_KAIMAN_OK &&
+        description != NULL && strncmp(description, "running", 7) == 0) {
+        running = 1;
+    }
+    kc_kaiman_free(description);
+    return running;
+}
+
+/**
+ * Show the main window from the tray Open item.
+ * @param item Invoked tray item, unused.
+ * @param userdata Active GUI state.
+ * @return void
+ */
+static void tray_open(kc_tray_item_t *item, void *userdata) {
+    kc_gui_state_t *state = (kc_gui_state_t *)userdata;
+
+    (void)item;
+    if (state != NULL && state->wvw != NULL) (void)kc_wvw_show(state->wvw);
+}
+
+/**
+ * Toggle the gateway from the tray Start/Stop item.
+ * @param item Invoked tray item.
+ * @param userdata Active GUI state, unused.
+ * @return void
+ */
+static void tray_toggle(kc_tray_item_t *item, void *userdata) {
+    (void)userdata;
+    if (item == NULL) return;
+    if (gateway_running() != 0) {
+        (void)kc_kaiman_stop();
+        (void)kc_tray_item_set_text(item, "Start");
+    } else {
+        (void)kc_kaiman_start(NULL);
+        (void)kc_tray_item_set_text(item, "Stop");
+    }
+}
+
+/**
+ * Request application shutdown from the tray Quit item.
+ * @param item Invoked tray item, unused.
+ * @param userdata Active GUI state.
+ * @return void
+ */
+static void tray_quit(kc_tray_item_t *item, void *userdata) {
+    kc_gui_state_t *state = (kc_gui_state_t *)userdata;
+
+    (void)item;
+    if (state != NULL) state->stop = 1;
+}
+
+/**
  * Detect an explicit preference for light appearance.
  * @return 1 for an explicit light preference, otherwise 0.
  */
@@ -954,15 +1018,22 @@ int kc_kaiman_gui_run(void) {
     kc_wvw_t *wvw = NULL;
     kc_wvw_options_t options;
     kc_wvw_bridge_options_t bridge;
+    kc_tray_options_t tray_options;
+    kc_tray_item_t *open_item = NULL;
+    kc_tray_item_t *separator = NULL;
+    kc_tray_item_t *quit_item = NULL;
     char *url = NULL;
     char *icon = NULL;
     const char *detail;
     int width = 1120;
     int height = 760;
-    int visible;
+    int hide_on_close = 1;
     int result = 1;
 
     state.stop = 0;
+    state.wvw = NULL;
+    state.tray = NULL;
+    state.toggle = NULL;
     url = gui_index_url();
 #ifdef _WIN32
     icon = gui_asset_path("logo.ico");
@@ -979,6 +1050,7 @@ int kc_kaiman_gui_run(void) {
     options.icon = icon;
     options.width = &width;
     options.height = &height;
+    options.hide_on_close = &hide_on_close;
     options.allow_file = 1;
     if (kc_wvw_open(&wvw, &options) != KC_WVW_OK) {
         detail = wvw != NULL ? kc_wvw_get_error(wvw) : NULL;
@@ -1003,24 +1075,42 @@ int kc_kaiman_gui_run(void) {
             detail != NULL ? detail : "unable to load GUI assets");
         goto done;
     }
+    state.wvw = wvw;
+    memset(&tray_options, 0, sizeof(tray_options));
+    tray_options.icon = icon;
+    tray_options.tooltip = "kaiman";
+    if (kc_tray_open(&state.tray, &tray_options) != KC_TRAY_OK) {
+        detail = state.tray != NULL ? kc_tray_get_error(state.tray) : NULL;
+        fprintf(stderr, "kaiman: %s\n",
+            detail != NULL ? detail : "unable to open tray");
+        goto done;
+    }
+    if (kc_tray_add_item(state.tray, &open_item, "Open",
+        tray_open, &state) != KC_TRAY_OK ||
+        kc_tray_add_item(state.tray, &state.toggle,
+            gateway_running() != 0 ? "Stop" : "Start",
+            tray_toggle, &state) != KC_TRAY_OK ||
+        kc_tray_add_separator(state.tray, &separator) != KC_TRAY_OK ||
+        kc_tray_add_item(state.tray, &quit_item, "Quit",
+            tray_quit, &state) != KC_TRAY_OK) {
+        detail = kc_tray_get_error(state.tray);
+        fprintf(stderr, "kaiman: %s\n",
+            detail != NULL ? detail : "unable to create tray menu");
+        goto done;
+    }
     kc_gui_active = &state;
     signal(SIGINT, gui_signal);
 #ifndef _WIN32
     signal(SIGTERM, gui_signal);
 #endif
     while (state.stop == 0) {
-        visible = kc_wvw_is_visible(wvw);
-        if (visible == 1 ||
-            (visible == 0 && kc_wvw_is_minimized(wvw) == 1)) {
-            kc_util_sleep(100);
-        } else {
-            state.stop = 1;
-        }
+        kc_util_sleep(100);
     }
     result = 0;
 
 done:
     kc_gui_active = NULL;
+    kc_tray_close(state.tray);
     kc_wvw_close(wvw);
     kc_kaiman_free(url);
     kc_kaiman_free(icon);
