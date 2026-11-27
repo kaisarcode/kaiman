@@ -23,7 +23,10 @@ curl http://127.0.0.1:49380/v1/models
 curl http://127.0.0.1:49380/v1/sessions
 ```
 
-Use `kaiman gui` to manage providers and the gateway from the desktop.
+Use `kaiman gui` to manage services and the gateway from the desktop.
+Run `install` (or `install.exe`) beside the Linux or Windows desktop build
+to copy the application to a user-selected directory and register its menu
+entry.
 
 ## Documentation
 
@@ -37,7 +40,7 @@ Use `kaiman gui` to manage providers and the gateway from the desktop.
 ## Dependencies
 
 Dependencies are vendored under `lib/kaisarcode`, following the embdex
-mechanism: `libhttp.c`, `libnetl.c`, `libtls.c`, `libwvw.c` and `libtray.c`.
+mechanism: `libhttp.c`, `libnetl.c`, `libtls.c`, `libwvw.c`, `libtray.c` and `libmenu.c`.
 No runtime dependency is installed system-wide. The shared library and CLI load
 every dependency from their own directory.
 

@@ -1,0 +1,9 @@
+{
+  "name": "libmenu",
+  "version": "1.0.0",
+  "description": "Adds and deletes applications from the native application menu.",
+  "author": "KaisarCode",
+  "license": "LGPL-3.0-only",
+  "website": "https://kaisarcode.com",
+  "repository": "https://gitlab.com/kaisarcode/libmenu.c"
+}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>kaiman installer</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="install.css">
+</head>
+<body class="installer">
+    <button class="icon-button installer-close" id="close" type="button" aria-label="Close" title="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m18 6-12 12M6 6l12 12"/></svg>
+    </button>
+    <div class="installer-brand">
+        <img src="logo-92.png" srcset="logo-128.png 2x" alt="">
+        <h1>kaiman</h1>
+        <p>AI in a Snap</p>
+    </div>
+    <form id="install-form">
+        <div class="field">
+            <label for="directory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l2 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2Z"/></svg>Installation directory</label>
+            <div class="directory-row">
+                <input id="directory" type="text" autocomplete="off" required>
+                <button class="button" id="browse" type="button" aria-label="Browse directory" title="Browse directory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l2 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2Z"/></svg></button>
+            </div>
+        </div>
+        <div class="field">
+            <label for="category"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Menu category</label>
+            <input id="category" type="text" value="Development" list="categories" required>
+            <datalist id="categories">
+                <option value="Development">
+                <option value="Utility">
+                <option value="Network">
+                <option value="System">
+                <option value="Office">
+                <option value="Education">
+            </datalist>
+        </div>
+        <p id="install-result" role="status" hidden></p>
+        <button class="button button-primary install-button" id="install" type="submit">Install</button>
+    </form>
+    <script src="install.js"></script>
+</body>
+</html>

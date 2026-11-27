@@ -1,0 +1,251 @@
+## Makefile
+## Summary: Cross-compilation builder for menu.
+##
+## Author:  KaisarCode
+## Website: https://kaisarcode.com
+## License: https://www.gnu.org/licenses/lgpl-3.0.html
+
+WINE ?= wine
+WINE_X86_64_CC ?= x86_64-w64-mingw32-gcc
+
+BUILD_DIR := .build
+BIN_DIR   := bin
+
+define cmake_build
+	@prelog=$$(mktemp); \
+	if ! $(3) cmake --build $(1) -- -n > "$$prelog" 2>&1; then \
+		cat "$$prelog"; \
+		rm -f "$$prelog"; \
+		exit 1; \
+	fi; \
+	if grep -q "ninja: no work to do." "$$prelog"; then \
+		rm -f "$$prelog"; \
+		out=$$(mktemp); \
+		$(3) cmake --build $(1) 2>"$$out"; \
+		r=$$?; \
+		if [ -s "$$out" ]; then grep -v 'skipping incompatible' < "$$out"; fi; \
+		rm -f "$$out"; \
+		exit $$r; \
+	fi; \
+	rm -f "$$prelog"; \
+	out=$$(mktemp); \
+	$(3) cmake --build $(1) 2>"$$out"; \
+	r=$$?; \
+	if [ -s "$$out" ]; then grep -v 'skipping incompatible' < "$$out"; fi; \
+	rm -f "$$out"; \
+	if [ $$r -ne 0 ]; then \
+		exit 1; \
+	fi; \
+	if [ -n "$(2)" ]; then \
+		$(2); \
+		log=$$(mktemp); \
+		if ! $(3) cmake --build $(1) > "$$log" 2>&1; then \
+			cat "$$log"; \
+			rm -f "$$log"; \
+			exit 1; \
+		fi; \
+		rm -f "$$log"; \
+	fi; \
+	:
+endef
+
+HOST_ARCH       := $(shell uname -m)
+HOST_SYSTEM     := $(shell uname -s)
+NATIVE_ARCH     := unsupported
+NATIVE_PLATFORM := unsupported
+
+ifneq ($(filter x86_64 amd64,$(HOST_ARCH)),)
+NATIVE_ARCH := x86_64
+endif
+
+ifneq ($(filter i386 i686,$(HOST_ARCH)),)
+NATIVE_ARCH := i686
+endif
+
+ifneq ($(filter aarch64 arm64,$(HOST_ARCH)),)
+NATIVE_ARCH := aarch64
+endif
+
+ifneq ($(filter armv7l armv7%,$(HOST_ARCH)),)
+NATIVE_ARCH := armv7
+endif
+
+ifneq ($(filter ppc64le powerpc64le,$(HOST_ARCH)),)
+NATIVE_ARCH := powerpc64le
+endif
+
+ifneq ($(filter riscv64 s390x loongarch64 mips64el mipsel mips,$(HOST_ARCH)),)
+NATIVE_ARCH := $(HOST_ARCH)
+endif
+
+ifeq ($(HOST_SYSTEM),Linux)
+NATIVE_PLATFORM := linux
+endif
+
+ifneq ($(filter MINGW% MSYS% CYGWIN%,$(HOST_SYSTEM)),)
+NATIVE_PLATFORM := windows
+endif
+
+NATIVE_TARGET := $(NATIVE_PLATFORM)/$(NATIVE_ARCH)
+NATIVE_SHARED_NAME := libmenu.so
+NATIVE_IMPORT_LIBRARY :=
+
+ifeq ($(NATIVE_PLATFORM),windows)
+NATIVE_SHARED_NAME := libmenu.dll
+NATIVE_IMPORT_LIBRARY := -DMENU_TEST_IMPORT_LIBRARY=$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)/libmenu.dll.a
+endif
+
+.DEFAULT_GOAL := $(NATIVE_TARGET)
+
+.PHONY: all test wine clean \
+	linux/x86_64 windows/x86_64 \
+	linux/i686 windows/i686 \
+	linux/aarch64 linux/armv7 linux/armv7hf \
+	linux/riscv64 linux/powerpc64le \
+	linux/mips linux/mipsel linux/mips64el \
+	linux/s390x linux/loongarch64
+
+all: \
+	linux/x86_64 windows/x86_64 \
+	linux/i686 windows/i686 \
+	linux/aarch64 linux/armv7 linux/armv7hf \
+	linux/riscv64 linux/powerpc64le \
+	linux/mips linux/mipsel linux/mips64el \
+	linux/s390x linux/loongarch64
+
+## Linux
+
+define linux_target
+	@mkdir -p $(BIN_DIR)/linux/$(1)
+	@if [ ! -f $(BUILD_DIR)/$(subst /,-,$(1))-linux/CMakeCache.txt ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/linux/$(1)' $(BUILD_DIR)/$(subst /,-,$(1))-linux/CMakeCache.txt; then \
+		cmake -S . -B $(BUILD_DIR)/$(subst /,-,$(1))-linux \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_SYSTEM_NAME=Linux \
+			-DCMAKE_C_COMPILER=$(2) \
+			-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) \
+			-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) \
+			-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) \
+			-G Ninja -Wno-dev > /dev/null; \
+	fi
+	$(call cmake_build,$(BUILD_DIR)/$(subst /,-,$(1))-linux,cmake -S . -B $(BUILD_DIR)/$(subst /,-,$(1))-linux -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_C_COMPILER=$(2) -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/linux/$(1) -G Ninja -Wno-dev > /dev/null)
+	@echo "OK linux/$(1)"
+endef
+
+linux/x86_64:
+	$(call linux_target,x86_64,gcc)
+
+linux/i686:
+	$(call linux_target,i686,i686-linux-gnu-gcc)
+
+linux/aarch64:
+	$(call linux_target,aarch64,aarch64-linux-gnu-gcc)
+
+linux/armv7hf:
+	$(call linux_target,armv7hf,arm-linux-gnueabihf-gcc)
+
+linux/armv7:
+	$(call linux_target,armv7,arm-linux-gnueabi-gcc)
+
+linux/riscv64:
+	$(call linux_target,riscv64,riscv64-linux-gnu-gcc)
+
+linux/powerpc64le:
+	$(call linux_target,powerpc64le,powerpc64le-linux-gnu-gcc)
+
+linux/mips:
+	$(call linux_target,mips,mips-linux-gnu-gcc)
+
+linux/mipsel:
+	$(call linux_target,mipsel,mipsel-linux-gnu-gcc)
+
+linux/mips64el:
+	$(call linux_target,mips64el,mips64el-linux-gnuabi64-gcc)
+
+linux/s390x:
+	$(call linux_target,s390x,s390x-linux-gnu-gcc)
+
+linux/loongarch64:
+	$(call linux_target,loongarch64,loongarch64-linux-gnu-gcc)
+
+## Windows
+
+define windows_target
+	@mkdir -p $(BIN_DIR)/windows/$(1)
+	@if [ ! -f $(BUILD_DIR)/$(1)-windows/CMakeCache.txt ] || ! grep -Fq '$(CURDIR)/$(BIN_DIR)/windows/$(1)' $(BUILD_DIR)/$(1)-windows/CMakeCache.txt; then \
+		cmake -S . -B $(BUILD_DIR)/$(1)-windows \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_SYSTEM_NAME=Windows \
+			-DCMAKE_C_COMPILER=$(2) \
+			-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) \
+			-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) \
+			-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) \
+			-G Ninja -Wno-dev > /dev/null; \
+	fi
+	$(call cmake_build,$(BUILD_DIR)/$(1)-windows,cmake -S . -B $(BUILD_DIR)/$(1)-windows -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=$(2) -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) -DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(CURDIR)/$(BIN_DIR)/windows/$(1) -G Ninja -Wno-dev > /dev/null)
+	@echo "OK windows/$(1)"
+endef
+
+windows/x86_64:
+	$(call windows_target,x86_64,x86_64-w64-mingw32-gcc)
+
+windows/i686:
+	$(call windows_target,i686,i686-w64-mingw32-gcc)
+
+## Utility
+
+test:
+	@if [ -n "$(filter wine,$(MAKECMDGOALS))" ]; then \
+		if ! command -v $(WINE) >/dev/null 2>&1; then \
+			echo "Missing Wine runtime: $(WINE)" >&2; \
+			exit 1; \
+		fi; \
+		if ! command -v $(WINE_X86_64_CC) >/dev/null 2>&1; then \
+			echo "Missing Windows cross-compiler: $(WINE_X86_64_CC)" >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f $(BIN_DIR)/windows/x86_64/libmenu.dll ] || [ ! -f $(BIN_DIR)/windows/x86_64/libmenu.dll.a ] || [ ! -f $(BIN_DIR)/windows/x86_64/menu.exe ]; then \
+			echo "Missing Windows artifacts. Run 'make windows/x86_64' or 'make all' first." >&2; \
+			exit 1; \
+		fi; \
+		cmake -S . -B $(BUILD_DIR)/test-wine \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DCMAKE_SYSTEM_NAME=Windows \
+			-DCMAKE_C_COMPILER=$(WINE_X86_64_CC) \
+			-DMENU_BUILD_TESTS=ON \
+			-DMENU_TEST_SHARED_LIBRARY=$(CURDIR)/$(BIN_DIR)/windows/x86_64/libmenu.dll \
+			-DMENU_TEST_IMPORT_LIBRARY=$(CURDIR)/$(BIN_DIR)/windows/x86_64/libmenu.dll.a \
+			-DCMAKE_CROSSCOMPILING_EMULATOR=$(WINE) \
+			-G Ninja -Wno-dev > /dev/null; \
+		cmake -S . -B $(BUILD_DIR)/test-wine -DMENU_CLI_PATH=$(CURDIR)/$(BIN_DIR)/windows/x86_64/menu.exe > /dev/null || exit 1; \
+		cmake --build $(BUILD_DIR)/test-wine --target menu_contract_test || exit 1; \
+		cd $(BUILD_DIR)/test-wine && EGL_LOG_LEVEL=fatal WINEDEBUG=-all $(WINE) menu_contract_test.exe all; \
+	else \
+		if [ "$(NATIVE_ARCH)" = "unsupported" ] || [ "$(NATIVE_PLATFORM)" = "unsupported" ]; then \
+			echo "Unsupported native test target $(HOST_ARCH)/$(HOST_SYSTEM)" >&2; \
+			exit 1; \
+		fi; \
+		if [ ! -f $(BIN_DIR)/$(NATIVE_TARGET)/$(NATIVE_SHARED_NAME) ] || [ ! -f $(BIN_DIR)/$(NATIVE_TARGET)/menu$(NATIVE_EXE_EXT) ]; then \
+			echo "Missing native artifacts. Run 'make' first." >&2; \
+			exit 1; \
+		fi; \
+		cmake -S . -B $(BUILD_DIR)/test \
+			-DCMAKE_BUILD_TYPE=Release \
+			-DMENU_BUILD_TESTS=ON \
+			-DMENU_TEST_SHARED_LIBRARY=$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)/$(NATIVE_SHARED_NAME) \
+			$(NATIVE_IMPORT_LIBRARY) \
+			-G Ninja -Wno-dev > /dev/null; \
+		cmake -S . -B $(BUILD_DIR)/test -DMENU_CLI_PATH=$(CURDIR)/$(BIN_DIR)/$(NATIVE_TARGET)/menu$(NATIVE_EXE_EXT) > /dev/null || exit 1; \
+		cmake --build $(BUILD_DIR)/test --target menu_contract_test || exit 1; \
+		$(BUILD_DIR)/test/menu_contract_test all; \
+	fi
+
+wine:
+	@if [ -z "$(filter test,$(MAKECMDGOALS))" ]; then \
+		echo "Use 'make test wine' to run tests through Wine." >&2; \
+		exit 1; \
+	fi
+	@:
+
+clean:
+	@rm -rf $(BUILD_DIR)
+	@echo "OK clean"

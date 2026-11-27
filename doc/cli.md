@@ -86,3 +86,15 @@ at startup and 30 seconds after each completed check, including while the
 gateway is stopped. Edits invalidate the previous result. Automatic checks
 cap the configured upstream timeout at ten seconds per operation and do not
 send inference requests or modify credentials.
+
+## Desktop installation
+
+Run `install` on Linux or `install.exe` on Windows from the desktop build.
+The installer copies the application executable, shared runtime libraries and
+GUI assets to the selected directory. The default is
+`~/.local/opt/kaisarcode/kaiman` on Linux and
+`%LOCALAPPDATA%\\kaisarcode\\kaiman` on Windows. The editable menu category
+defaults to Development. The menu entry launches `kaiman gui`.
+Existing application configuration and credentials are left unchanged.
+The installer and its menu library are not required in the installed copy.
+Menu registration is supported on Linux and Windows by libmenu.

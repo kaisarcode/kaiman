@@ -11,6 +11,8 @@
     "libhttp",
     "libnetl",
     "libtls",
-    "libwvw"
+    "libwvw",
+    "libtray",
+    "libmenu"
   ]
 }

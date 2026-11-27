@@ -142,6 +142,9 @@ DEP_ROOT := lib/kaisarcode
 DEP_NAMES := http netl tls
 ifneq ($(strip $(TARGET_GUI)),)
 DEP_NAMES += wvw tray
+ifneq ($(filter linux/% windows/%,$(TARGET)),)
+DEP_NAMES += menu
+endif
 endif
 DEP_SHARED_EXT := so
 DEP_IMPORT_EXT :=

@@ -1,0 +1,96 @@
+body.installer {
+    min-height: 360px;
+    min-width: 320px;
+    height: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 16px var(--space-5);
+    position: relative;
+}
+
+.installer-close {
+    position: absolute;
+    right: var(--space-2);
+    top: var(--space-2);
+}
+
+.installer-brand {
+    text-align: center;
+    margin-bottom: var(--space-4);
+}
+
+.installer-brand img {
+    width: 92px;
+    height: 92px;
+    display: block;
+    margin: 0 auto;
+    object-fit: contain;
+}
+
+.installer-brand h1 {
+    font-size: 24px;
+    line-height: 1.2;
+    margin: 0;
+}
+
+.installer-brand p {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 4px 0 0;
+}
+
+#install-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+
+.installer .field label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.installer label svg,
+.directory-row button svg {
+    width: 16px;
+    height: 16px;
+    flex: none;
+}
+
+.installer label svg {
+    color: var(--link);
+}
+
+.directory-row {
+    display: flex;
+    gap: var(--space-2);
+}
+
+.directory-row input {
+    min-width: 0;
+    flex: 1;
+}
+
+.directory-row button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.install-button {
+    align-self: center;
+    min-width: 132px;
+    margin-top: var(--space-2);
+}
+
+#install-result {
+    margin: 0;
+    color: var(--error);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+#install-result[data-kind="success"] {
+    color: var(--success);
+}
