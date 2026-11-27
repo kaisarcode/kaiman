@@ -29,16 +29,19 @@
 #include <direct.h>
 #include <shlobj.h>
 #else
+#include <dirent.h>
 #include <gtk/gtk.h>
 #include <unistd.h>
 #endif
 
 #ifdef _WIN32
 #define INSTALL_EXE "kaiman.exe"
+#define UNINSTALL_EXE "uninstaller.exe"
 #define INSTALL_EXT ".dll"
 #define INSTALL_ICON "gui/tray-started.ico"
 #else
 #define INSTALL_EXE "kaiman"
+#define UNINSTALL_EXE "uninstaller"
 #define INSTALL_EXT ".so"
 #define INSTALL_ICON "gui/tray-started.png"
 #endif
@@ -52,6 +55,8 @@ typedef struct {
     char *response;
     atomic_int stop;
     atomic_int ready;
+    atomic_int remove_runtime;
+    int uninstall;
 } kc_install_t;
 
 static const char *const install_files[] = {
@@ -60,7 +65,8 @@ static const char *const install_files[] = {
     "libtray" INSTALL_EXT, "gui/index.html", "gui/app.js", "gui/styles.css",
     "gui/logo-46.png", "gui/logo-92.png", "gui/logo-128.png", "gui/logo.ico",
     "gui/tray-started.png", "gui/tray-stopped.png", "gui/tray-started.ico",
-    "gui/tray-stopped.ico"
+    "gui/tray-stopped.ico", UNINSTALL_EXE, "libmenu" INSTALL_EXT,
+    "gui/install.html", "gui/install.js", "gui/install.css"
 #ifdef _WIN32
     , "WebView2Loader.dll"
 #endif
@@ -358,7 +364,411 @@ static const char *install_runtime(kc_install_t *state, const char *directory,
     free(executable);
     free(icon);
     free(command);
+    if (error == NULL) {
+        char *marker = install_join(directory, "kaiman.install");
+
+        if (marker == NULL || !kc_util_write_private(marker, "kaiman\n", 7U)) {
+            error = "Unable to record installation.";
+        }
+        free(marker);
+    }
     return error;
+}
+
+/**
+ * Resolve the parent directory of an owned file path.
+ * @param path Owned path.
+ * @return Owned parent path, or NULL on failure.
+ */
+static char *uninstall_parent(char *path) {
+    char *end;
+
+    if (path == NULL) return NULL;
+    end = strrchr(path, '/');
+#ifdef _WIN32
+    {
+        char *other = strrchr(path, '\\');
+
+        if (other != NULL && (end == NULL || other > end)) end = other;
+    }
+#endif
+    if (end == NULL) {
+        free(path);
+        return NULL;
+    }
+    *end = '\0';
+    return path;
+}
+
+/**
+ * Validate the installation marker before removing any files.
+ * @param directory Installed runtime directory.
+ * @return 1 for a registered installation, otherwise 0.
+ */
+static int uninstall_registered(const char *directory) {
+    char *path = install_join(directory, "kaiman.install");
+    size_t size = 0U;
+    char *data = path != NULL ? kc_util_read_file(path, &size) : NULL;
+    int valid = data != NULL && size == 7U &&
+        memcmp(data, "kaiman\n", 7U) == 0;
+
+    free(data);
+    free(path);
+    return valid;
+}
+
+/**
+ * Read a saved process identifier.
+ * @param directory Private state directory.
+ * @param name PID filename.
+ * @return Process identifier or zero.
+ */
+static unsigned long long uninstall_pid(const char *directory,
+    const char *name) {
+    char *path = install_join(directory, name);
+    size_t size = 0U;
+    char *data = path != NULL ? kc_util_read_file(path, &size) : NULL;
+    unsigned long long pid = 0ULL;
+    char *end;
+
+    if (data != NULL) {
+        pid = strtoull(data, &end, 10);
+        if (end == data) pid = 0ULL;
+        while (*end && isspace((unsigned char)*end)) end++;
+        if (*end != '\0') pid = 0ULL;
+    }
+    free(data);
+    free(path);
+    return pid;
+}
+
+/**
+ * Wait for a process to exit before removing runtime files.
+ * @param pid Process identifier.
+ * @return 1 when stopped, otherwise 0.
+ */
+static int uninstall_wait(unsigned long long pid) {
+    int index;
+
+    for (index = 0; index < 300 && kc_util_pid_alive(pid); index++) {
+        kc_util_sleep(100);
+    }
+    return !kc_util_pid_alive(pid);
+}
+
+/**
+ * Request that Kaiman and its gateway stop.
+ * @return Error message, or NULL on success.
+ */
+static const char *uninstall_stop(void) {
+    char *directory = uninstall_parent(kc_util_pid_path());
+    char *request;
+    unsigned long long pid;
+    int status;
+
+    if (directory == NULL) return "Unable to resolve private state.";
+    pid = uninstall_pid(directory, "kaiman-gui.pid");
+    if (kc_util_pid_alive(pid)) {
+        request = install_join(directory, "kaiman-gui.quit");
+        if (request == NULL || !kc_util_write_private(request, "", 0U)) {
+            free(request);
+            free(directory);
+            return "Unable to request application exit.";
+        }
+        status = uninstall_wait(pid);
+        remove(request);
+        free(request);
+        if (!status) {
+            free(directory);
+            return "Kaiman is still running.";
+        }
+    }
+    pid = uninstall_pid(directory, "kaiman.pid");
+    free(directory);
+    status = kc_kaiman_stop();
+    if (status != KC_KAIMAN_OK && status != KC_KAIMAN_NOT_FOUND) {
+        return "Unable to stop the gateway.";
+    }
+    if (!uninstall_wait(pid)) return "The gateway is still running.";
+    return NULL;
+}
+
+/**
+ * Remove a named file, accepting an already absent file.
+ * @param directory Base directory.
+ * @param name Relative filename.
+ * @return 1 on success, otherwise 0.
+ */
+static int uninstall_file(const char *directory, const char *name) {
+    char *path = install_join(directory, name);
+    int ok = path != NULL && (remove(path) == 0 || errno == ENOENT);
+
+    free(path);
+    return ok;
+}
+
+/**
+ * Remove an empty directory without deleting unrelated files.
+ * @param path Directory path.
+ * @return void
+ */
+static void uninstall_empty(const char *path) {
+#ifdef _WIN32
+    (void)_rmdir(path);
+#else
+    (void)rmdir(path);
+#endif
+}
+
+/**
+ * Remove saved local session references.
+ * @param directory Private state directory.
+ * @return 1 on success, otherwise 0.
+ */
+static int uninstall_sessions(const char *directory) {
+    char *path = install_join(directory, "sessions");
+    int ok = 1;
+
+    if (path == NULL) return 0;
+#ifdef _WIN32
+    {
+        char *pattern = install_join(path, "*.session");
+        WIN32_FIND_DATAA entry;
+        HANDLE search;
+
+        if (pattern == NULL) {
+            free(path);
+            return 0;
+        }
+        search = FindFirstFileA(pattern, &entry);
+        free(pattern);
+        if (search != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+                    !uninstall_file(path, entry.cFileName)) ok = 0;
+            } while (FindNextFileA(search, &entry));
+            if (GetLastError() != ERROR_NO_MORE_FILES) ok = 0;
+            FindClose(search);
+        } else if (GetLastError() != ERROR_FILE_NOT_FOUND &&
+            GetLastError() != ERROR_PATH_NOT_FOUND) {
+            ok = 0;
+        }
+    }
+#else
+    {
+        DIR *dir = opendir(path);
+        struct dirent *entry;
+
+        if (dir != NULL) {
+            while ((entry = readdir(dir)) != NULL) {
+                size_t length = strlen(entry->d_name);
+
+                if (length > 8U &&
+                    strcmp(entry->d_name + length - 8U, ".session") == 0 &&
+                    !uninstall_file(path, entry->d_name)) ok = 0;
+            }
+            closedir(dir);
+        } else if (errno != ENOENT) {
+            ok = 0;
+        }
+    }
+#endif
+    if (ok) uninstall_empty(path);
+    free(path);
+    return ok;
+}
+
+/**
+ * Remove private configuration and system credentials.
+ * @return Error message, or NULL on success.
+ */
+static const char *uninstall_data(void) {
+    kc_kaiman_t *manager = NULL;
+    kc_kaiman_service_t **services = NULL;
+    size_t count;
+    char *config;
+    char *state;
+    const char *error = NULL;
+
+    if (kc_kaiman_open(&manager, NULL) != KC_KAIMAN_OK) {
+        return "Unable to open saved configuration.";
+    }
+    config = uninstall_parent(kc_util_strdup(kc_kaiman_path(manager)));
+    state = uninstall_parent(kc_util_pid_path());
+    if (config == NULL || state == NULL) {
+        error = "Unable to resolve private data.";
+        goto done;
+    }
+    for (;;) {
+        if (kc_kaiman_get_services(manager, &services, &count) != KC_KAIMAN_OK) {
+            error = "Unable to read saved services.";
+            goto done;
+        }
+        if (count == 0U) break;
+        if (kc_kaiman_service_remove(services[0]) != KC_KAIMAN_OK) {
+            error = "Unable to remove a saved service or credential.";
+            goto done;
+        }
+    }
+    if (!uninstall_file(config, "services.ini") ||
+        !uninstall_file(config, "gui.theme") ||
+        !uninstall_sessions(state) ||
+        !uninstall_file(state, "kaiman.pid") ||
+        !uninstall_file(state, "kaiman-gui.pid") ||
+        !uninstall_file(state, "kaiman-gui.focus") ||
+        !uninstall_file(state, "kaiman-gui.quit")) {
+        error = "Unable to remove private data.";
+        goto done;
+    }
+    uninstall_empty(config);
+    uninstall_empty(state);
+
+done:
+    kc_kaiman_close(manager);
+    free(config);
+    free(state);
+    return error;
+}
+
+/**
+ * Prepare removal following explicit confirmation in the window.
+ * @param state Uninstaller context.
+ * @param purge Whether to remove private application data.
+ * @return Error message, or NULL on success.
+ */
+static const char *uninstall_prepare(kc_install_t *state, int purge) {
+    const char *error;
+
+    if (!uninstall_registered(state->source)) {
+        return "Run the uninstaller from the installed directory.";
+    }
+    error = uninstall_stop();
+    if (error != NULL) return error;
+    if (purge) {
+        error = uninstall_data();
+        if (error != NULL) return error;
+    }
+    if (kc_menu_delete("com.kaisarcode.kaiman") != KC_MENU_OK) {
+        return "Unable to remove the application menu entry.";
+    }
+    atomic_store(&state->remove_runtime, 1);
+    return NULL;
+}
+
+#ifdef _WIN32
+
+/**
+ * Append one fixed runtime filename to the deferred cleanup command.
+ * @param command Open command buffer.
+ * @param name Relative runtime filename.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int uninstall_delete_command(kc_buffer_t *command, const char *name) {
+    int status = kc_buffer_text(command, "del /F /Q \"!KC_KAIMAN_REMOVE!\\");
+    const char *cursor;
+
+    for (cursor = name; status == KC_KAIMAN_OK && *cursor; cursor++) {
+        char ch = *cursor == '/' ? '\\' : *cursor;
+
+        status = kc_buffer_append(command, &ch, 1U);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(command, "\" >nul 2>&1 & ");
+    }
+    return status;
+}
+
+/**
+ * Dispatch cleanup after the Windows process releases its executable.
+ * @param directory Installed directory.
+ * @return 1 when cleanup was launched, otherwise 0.
+ */
+static int uninstall_windows(const char *directory) {
+    static const char *const optional[] = {"libgcc_s_seh-1.dll",
+        "libstdc++-6.dll", "libwinpthread-1.dll"};
+    char system[MAX_PATH];
+    char *shell = NULL;
+    char *line = NULL;
+    kc_buffer_t *command = NULL;
+    STARTUPINFOA startup = {0};
+    PROCESS_INFORMATION process = {0};
+    size_t index;
+    int status;
+    int result = 0;
+
+    if (GetSystemDirectoryA(system, sizeof(system)) == 0 ||
+        !SetEnvironmentVariableA("KC_KAIMAN_REMOVE", directory)) return 0;
+    shell = install_join(system, "cmd.exe");
+    if (shell == NULL) goto done;
+    status = kc_buffer_open(&command);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(command,
+            "\"%s\" /D /V:ON /S /C \"for /L %%i in (1,1,30) do @(",
+            shell);
+    }
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < sizeof(install_files) / sizeof(install_files[0]); index++) {
+        status = uninstall_delete_command(command, install_files[index]);
+    }
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < sizeof(optional) / sizeof(optional[0]); index++) {
+        status = uninstall_delete_command(command, optional[index]);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(command,
+            "if not exist \"!KC_KAIMAN_REMOVE!\\uninstaller.exe\" ("
+            "del /F /Q \"!KC_KAIMAN_REMOVE!\\kaiman.install\" >nul 2>&1 & "
+            "rd \"!KC_KAIMAN_REMOVE!\\gui\" >nul 2>&1 & "
+            "rd \"!KC_KAIMAN_REMOVE!\" >nul 2>&1 & exit /b 0) & "
+            "ping -n 2 127.0.0.1 >nul) & exit /b 1\"");
+    }
+    if (status != KC_KAIMAN_OK) goto done;
+    line = kc_util_strdup(kc_buffer_value(command));
+    if (line == NULL) goto done;
+    startup.cb = sizeof(startup);
+    if (CreateProcessA(shell, line, NULL, NULL, FALSE, CREATE_NO_WINDOW,
+        NULL, system, &startup, &process)) {
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        result = 1;
+    }
+
+done:
+    free(shell);
+    free(line);
+    kc_buffer_close(command);
+    return result;
+}
+
+#endif
+
+/**
+ * Remove installed files after closing the uninstaller interface.
+ * @param directory Installed runtime directory.
+ * @return 1 on success or successful cleanup dispatch, otherwise 0.
+ */
+static int uninstall_runtime(const char *directory) {
+#ifdef _WIN32
+    return uninstall_windows(directory);
+#else
+    size_t index;
+    char *assets;
+    int ok = 1;
+
+    for (index = 0U; index < sizeof(install_files) / sizeof(install_files[0]);
+        index++) {
+        if (strcmp(install_files[index], UNINSTALL_EXE) == 0) continue;
+        if (!uninstall_file(directory, install_files[index])) ok = 0;
+    }
+    if (!ok) return 0;
+    if (!uninstall_file(directory, UNINSTALL_EXE) ||
+        !uninstall_file(directory, "kaiman.install")) return 0;
+    assets = install_join(directory, "gui");
+    if (assets != NULL) uninstall_empty(assets);
+    free(assets);
+    uninstall_empty(directory);
+    return 1;
+#endif
 }
 
 /**
@@ -444,7 +854,9 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
     char *chosen = NULL;
     int result;
 
-    if (strcmp(method, "directory") == 0) {
+    if (strcmp(method, "mode") == 0) {
+        message = state->uninstall ? "uninstall" : "install";
+    } else if (strcmp(method, "directory") == 0) {
         message = state->directory;
     } else if (strcmp(method, "browse") == 0) {
         chosen = install_browse();
@@ -466,7 +878,15 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
         }
 #endif
         atomic_store(&state->ready, 1);
-    } else if (strcmp(method, "install") == 0) {
+    } else if (strcmp(method, "uninstall") == 0 && state->uninstall) {
+        if (params_json == NULL || kc_json_parse(params_json,
+            strlen(params_json), &params) != KC_KAIMAN_OK) {
+            message = "Invalid removal parameters.";
+        } else {
+            message = uninstall_prepare(state,
+                kc_json_boolean(kc_json_member(params, "purge")));
+        }
+    } else if (strcmp(method, "install") == 0 && !state->uninstall) {
         if (params_json == NULL || kc_json_parse(params_json,
             strlen(params_json), &params) != KC_KAIMAN_OK) {
             message = "Invalid installation parameters.";
@@ -526,8 +946,8 @@ static char *install_url(const char *source) {
  * @return 0 after success or cancellation, otherwise 1.
  */
 int main(void) {
-    static const char *const methods[] = {"directory", "browse", "install",
-        "close", "ready"};
+    static const char *const methods[] = {"mode", "directory", "browse",
+        "install", "uninstall", "close", "ready"};
     kc_install_t state = {0};
     kc_wvw_options_t options = {0};
     kc_wvw_bridge_options_t bridge = {0};
@@ -545,7 +965,11 @@ int main(void) {
     const char *native_error;
 
     state.source = install_source();
-    state.directory = install_default();
+#ifdef KC_UNINSTALLER
+    state.uninstall = 1;
+#endif
+    state.directory = state.uninstall ?
+        kc_util_strdup(state.source) : install_default();
     if (state.source == NULL || state.directory == NULL) goto done;
     url = install_url(state.source);
     icon = install_join(state.source, INSTALL_ICON);
@@ -570,7 +994,8 @@ int main(void) {
         }
     }
     options.url = url;
-    options.title = "kaiman installer";
+    options.title = state.uninstall ? "kaiman uninstaller" :
+        "kaiman installer";
     options.icon = icon;
     options.width = &width;
     options.height = &height;
@@ -621,6 +1046,11 @@ done:
             native_error != NULL ? native_error : "");
     }
     kc_wvw_close(wvw);
+    if (atomic_load(&state.remove_runtime) &&
+        !uninstall_runtime(state.source)) {
+        fprintf(stderr, "kaiman: unable to remove installed files\n");
+        result = 1;
+    }
     free(state.response);
     free(state.directory);
     free(state.source);

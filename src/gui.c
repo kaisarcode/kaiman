@@ -1354,6 +1354,7 @@ int kc_kaiman_gui_run(void) {
     char *tray_started = NULL;
     char *tray_stopped = NULL;
     char *focus_path = NULL;
+    char *quit_path = NULL;
     FILE *focus;
     const char *detail;
     int width = 1120;
@@ -1365,6 +1366,7 @@ int kc_kaiman_gui_run(void) {
 
     if (gui_claim() == 0) return 0;
     focus_path = gui_state_path("kaiman-gui.focus");
+    quit_path = gui_state_path("kaiman-gui.quit");
     state.stop = 0;
     state.toggle_dirty = 0;
     state.wvw = NULL;
@@ -1461,6 +1463,14 @@ int kc_kaiman_gui_run(void) {
                 running = current;
             }
         }
+        if (quit_path != NULL) {
+            focus = fopen(quit_path, "r");
+            if (focus != NULL) {
+                fclose(focus);
+                remove(quit_path);
+                break;
+            }
+        }
         if (focus_path != NULL) {
             focus = fopen(focus_path, "r");
             if (focus != NULL) {
@@ -1480,6 +1490,7 @@ done:
     health_clear(&state);
     gui_release();
     kc_kaiman_free(focus_path);
+    kc_kaiman_free(quit_path);
     kc_kaiman_free(url);
     kc_kaiman_free(icon);
     kc_kaiman_free(tray_started);

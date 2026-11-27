@@ -97,5 +97,15 @@ GUI assets to the selected directory. The default is
 `%LOCALAPPDATA%\\kaisarcode\\kaiman` on Windows. The editable menu category
 defaults to Development. The menu entry launches `kaiman gui`.
 Existing application configuration and credentials are left unchanged.
-The installer and its menu library are not required in the installed copy.
-Menu registration is supported on Linux and Windows by libmenu.
+The installer copies the uninstaller and its menu library into the installed
+runtime. Menu registration is supported on Linux and Windows by libmenu.
+
+## Desktop uninstallation
+
+Run `uninstaller` or `uninstaller.exe` from the installed directory.
+The uninstaller stops the GUI and gateway, removes the menu entry, and
+removes the installed runtime files. The directory is removed if empty.
+Configuration, credentials and local session references are retained by
+default and can be removed using the optional checkbox. Provider-side
+sessions and external agent credentials are left unchanged. On Windows,
+runtime cleanup is deferred until the uninstaller exits.

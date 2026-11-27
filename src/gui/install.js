@@ -15,6 +15,8 @@ var button = document.getElementById("install");
 var browse = document.getElementById("browse");
 var closeButton = document.getElementById("close");
 var installed = false;
+var uninstall = false;
+var purge = document.getElementById("purge");
 
 /**
  * Show an installation result.
@@ -58,28 +60,43 @@ async function handleInstall(event) {
     closeButton.disabled = true;
     directory.disabled = true;
     category.disabled = true;
+    purge.disabled = true;
     showResult("", false);
     try {
-        var error = await window.NativeBridge.install({
-            directory: directory.value.trim(),
-            category: category.value.trim()
-        });
+        var error;
 
+        if (uninstall) {
+            button.textContent = "Uninstalling...";
+            error = await window.NativeBridge.uninstall({
+                purge: purge.checked
+            });
+        } else {
+            error = await window.NativeBridge.install({
+                directory: directory.value.trim(),
+                category: category.value.trim()
+            });
+        }
         if (error) {
-            showResult("Installation failed: " + error, false);
+            showResult(error, false);
+        } else if (uninstall) {
+            installed = true;
+            await window.NativeBridge.close();
         } else {
             installed = true;
             button.textContent = "Close";
             showResult("Installation complete.", true);
         }
     } catch (error) {
-        showResult("Installation failed.", false);
+        showResult(uninstall ? "Uninstallation failed." :
+            "Installation failed.", false);
     } finally {
         button.disabled = false;
         closeButton.disabled = false;
-        browse.disabled = installed;
-        directory.disabled = installed;
-        category.disabled = installed;
+        browse.disabled = installed || uninstall;
+        directory.disabled = installed || uninstall;
+        category.disabled = installed || uninstall;
+        purge.disabled = installed;
+        if (uninstall && !installed) button.textContent = "Uninstall";
     }
 }
 
@@ -107,9 +124,20 @@ async function run() {
         if (!window.NativeBridge || !window.NativeBridge.directory) {
             throw new Error("Native bridge unavailable.");
         }
+        uninstall = await window.NativeBridge.mode() === "uninstall";
         directory.value = await window.NativeBridge.directory();
+        if (uninstall) {
+            document.title = "kaiman uninstaller";
+            document.getElementById("category-field").hidden = true;
+            document.getElementById("purge-option").hidden = false;
+            browse.hidden = true;
+            directory.readOnly = true;
+            button.classList.remove("button-primary");
+            button.classList.add("button-danger");
+            button.textContent = "Uninstall";
+        }
         button.disabled = false;
-        browse.disabled = false;
+        browse.disabled = uninstall;
     } catch (error) {
         showResult(error.message || "Installer initialization failed.", false);
     }

@@ -24,7 +24,7 @@
                 <button class="button" id="browse" type="button" disabled aria-label="Browse directory" title="Browse directory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4l2 2h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2Z"/></svg></button>
             </div>
         </div>
-        <div class="field">
+        <div class="field" id="category-field">
             <label for="category"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Menu category</label>
             <input id="category" type="text" value="Development" list="categories" required>
             <datalist id="categories">
@@ -36,6 +36,10 @@
                 <option value="Education">
             </datalist>
         </div>
+        <label class="purge-option" id="purge-option" hidden>
+            <input id="purge" type="checkbox">
+            Remove configuration, credentials and local session state
+        </label>
         <p id="install-result" role="status" hidden></p>
         <button class="button button-primary install-button" id="install" type="submit" disabled>Install</button>
     </form>
