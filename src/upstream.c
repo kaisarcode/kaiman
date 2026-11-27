@@ -74,6 +74,8 @@ typedef struct {
     size_t chunk_need;
     double deadline;
     char *content_type;
+    char *location;
+    int stream_only;
     kc_buffer_t *raw;
     kc_buffer_t *header;
     kc_buffer_t *body;
@@ -115,18 +117,16 @@ static int upstream_emit(kc_upstream_state_t *state,
     int status;
 
     if (state == NULL || size == 0U) return KC_KAIMAN_OK;
-    if (size > (size_t)-1 - state->body->size) {
-        state->failure = KC_KAIMAN_ENOMEM;
-        return state->failure;
-    }
-    if (state->body->size + size > UPSTREAM_MAX_BODY) {
-        state->failure = KC_KAIMAN_EHTTP;
-        return state->failure;
-    }
-    status = kc_buffer_append(state->body, data, size);
-    if (status != KC_KAIMAN_OK) {
-        state->failure = status;
-        return status;
+    if (!state->stream_only) {
+        if (size > UPSTREAM_MAX_BODY - state->body->size) {
+            state->failure = KC_KAIMAN_EHTTP;
+            return state->failure;
+        }
+        status = kc_buffer_append(state->body, data, size);
+        if (status != KC_KAIMAN_OK) {
+            state->failure = status;
+            return status;
+        }
     }
     if (state->chunk != NULL) {
         status = state->chunk(data, size, state->userdata);
@@ -242,6 +242,18 @@ static int upstream_headers(kc_upstream_state_t *state) {
             if (state->content_type == NULL) return KC_KAIMAN_ENOMEM;
             memcpy(state->content_type, value, count);
             state->content_type[count] = '\0';
+        } else if (upstream_name(line, (size_t)(colon - line),
+            "location")) {
+            size_t count = (size_t)(separator - value);
+
+            while (count > 0U && isspace((unsigned char)value[count - 1U])) {
+                count--;
+            }
+            free(state->location);
+            state->location = (char *)malloc(count + 1U);
+            if (state->location == NULL) return KC_KAIMAN_ENOMEM;
+            memcpy(state->location, value, count);
+            state->location[count] = '\0';
         } else if (upstream_name(line, (size_t)(colon - line),
             "transfer-encoding")) {
             if (strstr(value, "chunked") != NULL) state->chunked = 1;
@@ -827,6 +839,7 @@ static int upstream_connect(const kc_upstream_url_t *url, double deadline,
 void kc_upstream_response_free(kc_upstream_response_t *response) {
     if (response == NULL) return;
     free(response->content_type);
+    free(response->location);
     free(response->body);
     memset(response, 0, sizeof(*response));
 }
@@ -914,6 +927,7 @@ int kc_upstream_send(const kc_upstream_request_t *request,
     if (status == KC_KAIMAN_OK) status = kc_buffer_open(&state.header);
     if (status == KC_KAIMAN_OK) status = kc_buffer_open(&state.body);
     if (status != KC_KAIMAN_OK) goto done;
+    state.stream_only = request->stream_only;
     state.chunk = request->chunk;
     state.status_fn = request->status;
     state.userdata = request->userdata;
@@ -959,6 +973,8 @@ int kc_upstream_send(const kc_upstream_request_t *request,
     response->status = state.status;
     response->content_type = kc_util_strdup(state.content_type != NULL
         ? state.content_type : "");
+    response->location = state.location;
+    state.location = NULL;
     response->body = kc_util_strdup(kc_buffer_value(state.body));
     if (response->content_type == NULL || response->body == NULL) {
         kc_upstream_response_free(response);
@@ -975,6 +991,7 @@ done:
     kc_buffer_close(state.header);
     kc_buffer_close(state.body);
     free(state.content_type);
+    free(state.location);
     kc_http_free(wire);
     free(fields);
     upstream_url_free(&url);

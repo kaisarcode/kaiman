@@ -167,12 +167,14 @@ target_link_libraries(kaiman_cli PRIVATE kaiman_shared
     ${KC_GUI_SHARED_LIBS} ${KC_GUI_LINK_LIBS} ${KC_SYSTEM_LINKS})
 
 if(KC_INSTALLER)
+    target_sources(kaiman_cli PRIVATE src/update.c)
+    target_compile_definitions(kaiman_cli PRIVATE KC_KAIMAN_UPDATE=1)
     foreach(asset install.html install.js install.css)
         configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/gui/${asset}"
             "${KC_OUTPUT_DIR}/gui/${asset}" COPYONLY)
     endforeach()
     foreach(tool installer uninstaller)
-        add_executable(kaiman_${tool} src/install.c)
+        add_executable(kaiman_${tool} src/install.c src/update.c)
         set_target_properties(kaiman_${tool} PROPERTIES OUTPUT_NAME "${tool}"
             SKIP_BUILD_RPATH TRUE)
         target_compile_options(kaiman_${tool} PRIVATE -O2 -Wall -Wextra -Werror)

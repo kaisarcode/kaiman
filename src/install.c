@@ -16,6 +16,8 @@
 #include "libwvw.h"
 #include "json.h"
 #include "util.h"
+#include "child.h"
+#include "update.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -1109,10 +1111,188 @@ static char *install_url(const char *source) {
 }
 
 /**
- * Open the borderless installer and process its lifetime.
+ * Query the version of the installed executable before changing its runtime.
+ * @param executable Absolute installed executable path.
+ * @return Owned version string, or NULL on failure.
+ */
+static char *install_version(const char *executable) {
+    kc_child_t *child = NULL;
+    char *args[] = {(char *)executable, "--version", NULL};
+    char *version = NULL;
+    double deadline = kc_util_seconds() + 10.0;
+
+    if (kc_child_open(&child, args) == KC_KAIMAN_OK) {
+        if (kc_child_line(child, deadline, &version) != KC_KAIMAN_OK ||
+            kc_child_wait(child, deadline) != KC_KAIMAN_OK) {
+            free(version);
+            version = NULL;
+        }
+    }
+    kc_child_close(child);
+    return version;
+}
+
+/**
+ * Check whether a runtime file exists as a regular file.
+ * @param directory Runtime directory.
+ * @param name Relative filename.
+ * @return 1 when present, otherwise 0.
+ */
+static int install_exists(const char *directory, const char *name) {
+    char *path = install_join(directory, name);
+    struct stat info;
+    int result = path != NULL && stat(path, &info) == 0 &&
+        S_ISREG(info.st_mode);
+
+    free(path);
+    return result;
+}
+
+/**
+ * Copy an update while retaining the original files for rollback.
+ * @param state Installer context.
+ * @param backup Private backup directory.
+ * @return 1 on success, 0 on safe failure, -1 when rollback fails.
+ */
+static int install_replace(kc_install_t *state, const char *backup) {
+    size_t count = sizeof(install_files) / sizeof(install_files[0]);
+    unsigned char present[sizeof(install_files) / sizeof(install_files[0])] = {0};
+    char *assets = install_join(backup, "gui");
+    size_t index;
+    int result = 0;
+
+    if (assets == NULL || !install_parents(assets)) goto done;
+    for (index = 0U; index < count; index++) {
+        const char *name = install_files[index];
+
+        if (!install_exists(state->source, name)) goto done;
+        present[index] = (unsigned char)install_exists(state->directory, name);
+        if (present[index] && !install_copy(state->directory, backup, name)) {
+            goto done;
+        }
+    }
+    for (index = 0U; index < count; index++) {
+        if (!install_copy(state->source, state->directory,
+            install_files[index])) break;
+    }
+    if (index == count) {
+        result = 1;
+    } else {
+        size_t changed;
+
+        for (changed = 0U; changed <= index; changed++) {
+            const char *name = install_files[changed];
+
+            if (present[changed]) {
+                if (!install_copy(backup, state->directory, name)) result = -1;
+            } else if (!uninstall_file(state->directory, name)) {
+                result = -1;
+            }
+        }
+    }
+
+done:
+    free(assets);
+    return result;
+}
+
+/**
+ * Display a native error when an update cannot restart the application.
+ * @param message Error description.
+ * @return void
+ */
+static void install_update_error(const char *message) {
+#ifdef _WIN32
+    (void)MessageBoxA(NULL, message, "kaiman update", MB_OK | MB_ICONERROR);
+#else
+    if (gtk_init_check(NULL, NULL)) {
+        GtkWidget *dialog = gtk_message_dialog_new(NULL, GTK_DIALOG_MODAL,
+            GTK_MESSAGE_ERROR, GTK_BUTTONS_CLOSE, "%s", message);
+
+        (void)gtk_dialog_run(GTK_DIALOG(dialog));
+        gtk_widget_destroy(dialog);
+    } else {
+        fprintf(stderr, "kaiman update: %s\n", message);
+    }
+#endif
+}
+
+/**
+ * Apply a verified staged release without opening the installer interface.
+ * @param state Installer context.
+ * @return 0 on success, otherwise 1.
+ */
+static int install_update(kc_install_t *state) {
+    char *stage = kc_update_directory();
+    char *expected_path = kc_update_path(stage, "version");
+    char *result_path = kc_update_path(stage, "result");
+    char *pid_path = kc_update_path(stage, "pid");
+    char *backup = kc_update_path(stage, "backup");
+    char *executable = install_join(state->directory, INSTALL_EXE);
+    char *expected = NULL;
+    char *version = NULL;
+    char pid[32];
+    size_t size = 0U;
+    const char *message = "Unable to prepare the update.";
+    const char *candidate = kc_kaiman_version();
+    int result = 1;
+    int changed = 0;
+    int stopped = 0;
+
+    if (expected_path == NULL || result_path == NULL || pid_path == NULL ||
+        backup == NULL || executable == NULL) goto done;
+    (void)snprintf(pid, sizeof(pid), "%llu\n", kc_util_process_id());
+    if (!kc_util_write_private(pid_path, pid, strlen(pid))) goto done;
+    expected = kc_util_read_file(expected_path, &size);
+    version = install_version(executable);
+    if (expected == NULL || strlen(expected) != size || version == NULL ||
+        !kc_update_newer(candidate, version) ||
+        strcmp(expected[0] == 'v' ? expected + 1 : expected, candidate) != 0) {
+        message = "The downloaded version does not match the release.";
+        goto done;
+    }
+    message = uninstall_stop();
+    if (message != NULL) goto done;
+    stopped = 1;
+    changed = install_replace(state, backup);
+    if (changed < 0) {
+        message = "Update rollback failed. The backup has been retained.";
+        goto done;
+    }
+    message = changed ? "Update complete." :
+        "Update failed. The previous installation was preserved.";
+    result = changed ? 0 : 1;
+
+done:
+    if (changed >= 0 && result_path != NULL && message != NULL) {
+        (void)kc_util_write_private(result_path, message, strlen(message));
+    }
+    if (stopped && changed >= 0) {
+        if (!kc_update_launch(executable, "gui")) {
+            install_update_error("Unable to restart Kaiman. Open it from the application menu.");
+            result = 1;
+        }
+    } else if (message != NULL) {
+        install_update_error(message);
+    }
+    free(version);
+    free(expected);
+    free(executable);
+    free(backup);
+    free(pid_path);
+    free(result_path);
+    free(expected_path);
+    free(stage);
+    return result;
+}
+
+/**
+ * Open the installer or apply a staged software update.
+ * @param argc Argument count.
+ * @param argv Argument values.
  * @return 0 after success or cancellation, otherwise 1.
  */
-int main(void) {
+int main(int argc, char **argv) {
     static const char *const methods[] = {"mode", "platform", "directory",
         "browse", "blocked", "install", "uninstall", "close", "ready"};
     kc_install_t state = {0};
@@ -1137,6 +1317,18 @@ int main(void) {
 #endif
     state.registry = install_registry_path();
     if (state.source == NULL || state.registry == NULL) goto done;
+    if (!state.uninstall && argc == 2 && strcmp(argv[1], "--update") == 0) {
+        if (install_registry_read(state.registry, &state.directory) == 1 &&
+            uninstall_registered(state.directory)) {
+            result = install_update(&state);
+        } else {
+            install_update_error("The registered installation is missing.");
+        }
+        free(state.directory);
+        free(state.registry);
+        free(state.source);
+        return result;
+    }
     {
         int registered = install_registry_read(state.registry, &state.directory);
 

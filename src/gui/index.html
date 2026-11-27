@@ -107,7 +107,12 @@
                 <dt>Address</dt>
                 <dd class="mono" id="gateway-address"></dd>
                 <dt>Version</dt>
-                <dd class="mono" id="version"></dd>
+                <dd class="version-row">
+                    <span class="mono" id="version"></span>
+                    <button class="icon-button" id="open-update" type="button" aria-label="Software update available" title="Software update available" aria-haspopup="dialog" hidden>
+                        <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></svg>
+                    </button>
+                </dd>
             </dl>
             <div class="field">
                 <label for="listen">Listen address</label>
@@ -135,6 +140,25 @@
             </svg>
         </button>
     </footer>
+    <dialog class="dialog update-dialog" id="update-dialog" aria-labelledby="update-heading">
+        <div class="panel-heading">
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></svg>
+            <h2 id="update-heading">Software update</h2>
+        </div>
+        <dl class="details">
+            <dt>Installed version</dt>
+            <dd class="mono" id="update-installed"></dd>
+            <dt>Available version</dt>
+            <dd class="mono" id="update-version"></dd>
+        </dl>
+        <div class="update-notes" id="update-notes" hidden></div>
+        <progress id="update-progress" max="100" value="0" hidden></progress>
+        <p id="update-status" role="status" aria-live="polite" hidden></p>
+        <div class="dialog-actions">
+            <button class="button" id="update-cancel" type="button">Cancel</button>
+            <button class="button button-primary" id="update-confirm" type="button">Update</button>
+        </div>
+    </dialog>
     <dialog class="dialog api-dialog" id="api-dialog" aria-labelledby="api-heading">
         <div class="panel-heading">
             <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 10 5-10 5L2 8l10-5Zm-10 9 10 5 10-5M2 16l10 5 10-5"/></svg>

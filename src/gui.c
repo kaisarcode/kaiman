@@ -14,6 +14,9 @@
 #include "libtray.h"
 #include "libwvw.h"
 #include "util.h"
+#ifdef KC_KAIMAN_UPDATE
+#include "update.h"
+#endif
 
 #include <ctype.h>
 #include <signal.h>
@@ -49,6 +52,20 @@ typedef struct kc_health {
 #endif
 } kc_health_t;
 
+#ifdef KC_KAIMAN_UPDATE
+typedef struct {
+    kc_update_t release;
+    atomic_int phase;
+    int started;
+    char *message;
+#ifdef _WIN32
+    HANDLE thread;
+#else
+    pthread_t thread;
+#endif
+} kc_gui_update_t;
+#endif
+
 typedef struct {
     volatile sig_atomic_t stop;
     volatile sig_atomic_t toggle_dirty;
@@ -56,6 +73,9 @@ typedef struct {
     kc_tray_t *tray;
     kc_tray_item_t *toggle;
     kc_health_t *health;
+#ifdef KC_KAIMAN_UPDATE
+    kc_gui_update_t update;
+#endif
 } kc_gui_state_t;
 
 static kc_gui_state_t *kc_gui_active = NULL;
@@ -1063,6 +1083,146 @@ static int bridge_open_documentation(int api) {
     return set_success();
 }
 
+#ifdef KC_KAIMAN_UPDATE
+
+/**
+ * Check for releases or download the selected release on a worker thread.
+ * @param userdata GUI update context.
+ * @return Platform thread result.
+ */
+#ifdef _WIN32
+static DWORD WINAPI gui_update_worker(void *userdata) {
+#else
+static void *gui_update_worker(void *userdata) {
+#endif
+    kc_gui_update_t *job = (kc_gui_update_t *)userdata;
+    int phase = atomic_load(&job->phase);
+
+    if (phase == 0) {
+        int result;
+
+        job->message = kc_update_collect();
+        result = kc_update_check(&job->release);
+        atomic_store(&job->phase, result > 0 ? 1 : result == 0 ? 2 : 3);
+    } else {
+        atomic_store(&job->phase, kc_update_download(&job->release) ? 5 : 6);
+    }
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+/**
+ * Join the update worker when present.
+ * @param job GUI update context.
+ * @return void
+ */
+static void gui_update_join(kc_gui_update_t *job) {
+    if (!job->started) return;
+#ifdef _WIN32
+    (void)WaitForSingleObject(job->thread, INFINITE);
+    CloseHandle(job->thread);
+#else
+    (void)pthread_join(job->thread, NULL);
+#endif
+    job->started = 0;
+}
+
+/**
+ * Start a release check or download worker.
+ * @param job GUI update context.
+ * @param phase Initial operation phase.
+ * @return 1 on success, otherwise 0.
+ */
+static int gui_update_start(kc_gui_update_t *job, int phase) {
+    gui_update_join(job);
+    atomic_store(&job->phase, phase);
+#ifdef _WIN32
+    job->thread = CreateThread(NULL, 0, gui_update_worker, job, 0, NULL);
+    job->started = job->thread != NULL;
+#else
+    job->started = pthread_create(&job->thread, NULL,
+        gui_update_worker, job) == 0;
+#endif
+    if (!job->started) {
+        job->release.error = "Unable to start the update worker.";
+        atomic_store(&job->phase, phase == 0 ? 3 : 6);
+    }
+    return job->started;
+}
+
+/**
+ * Return the current release check or download state.
+ * @param job GUI update context.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int bridge_update_status(kc_gui_update_t *job) {
+    kc_buffer_t *buffer = NULL;
+    int phase = atomic_load(&job->phase);
+    int result = kc_buffer_open(&buffer);
+
+    if (result == KC_KAIMAN_OK) {
+        result = kc_buffer_format(buffer, "{\"phase\":%d", phase);
+    }
+    if (result == KC_KAIMAN_OK && phase != 0) {
+        result = kc_buffer_text(buffer, ",\"version\":");
+        if (result == KC_KAIMAN_OK) {
+            result = append_json_string(buffer, job->release.version);
+        }
+        if (result == KC_KAIMAN_OK) {
+            result = kc_buffer_text(buffer, ",\"notes\":");
+        }
+        if (result == KC_KAIMAN_OK) {
+            result = append_json_string(buffer, job->release.notes);
+        }
+        if (result == KC_KAIMAN_OK) {
+            result = kc_buffer_format(buffer, ",\"size\":%zu,\"received\":%zu",
+                job->release.size, atomic_load(&job->release.received));
+        }
+        if (result == KC_KAIMAN_OK && (phase == 3 || phase == 6)) {
+            result = kc_buffer_text(buffer, ",\"error\":");
+            if (result == KC_KAIMAN_OK) {
+                result = append_json_string(buffer, job->release.error);
+            }
+        }
+        if (result == KC_KAIMAN_OK && job->message != NULL) {
+            result = kc_buffer_text(buffer, ",\"message\":");
+            if (result == KC_KAIMAN_OK) {
+                result = append_json_string(buffer, job->message);
+            }
+            if (result == KC_KAIMAN_OK) {
+                free(job->message);
+                job->message = NULL;
+            }
+        }
+    }
+    if (result == KC_KAIMAN_OK) result = kc_buffer_text(buffer, "}");
+    if (result == KC_KAIMAN_OK) result = set_result(kc_buffer_value(buffer));
+    kc_buffer_close(buffer);
+    return result;
+}
+
+/**
+ * Begin the selected update after explicit confirmation.
+ * @param job GUI update context.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int bridge_update_download(kc_gui_update_t *job) {
+    int phase = atomic_load(&job->phase);
+
+    if (phase != 1 && phase != 6) {
+        return set_error(NULL, KC_KAIMAN_EINVAL, "No update available.");
+    }
+    if (!gui_update_start(job, 4)) {
+        return set_error(NULL, KC_KAIMAN_EIO, job->release.error);
+    }
+    return set_success();
+}
+
+#endif
+
 /**
  * Dispatch one NativeBridge method to the library.
  * @param wvw Open WebView, unused.
@@ -1106,6 +1266,12 @@ static int bridge_callback(kc_wvw_t *wvw, const char *method,
         result = bridge_open_documentation(0);
     } else if (strcmp(method, "openApiDocumentation") == 0) {
         result = bridge_open_documentation(1);
+#ifdef KC_KAIMAN_UPDATE
+    } else if (strcmp(method, "updateStatus") == 0) {
+        result = bridge_update_status(&state->update);
+    } else if (strcmp(method, "updateDownload") == 0) {
+        result = bridge_update_download(&state->update);
+#endif
     } else if (strcmp(method, "quit") == 0) {
         result = bridge_quit(state);
     } else {
@@ -1340,7 +1506,11 @@ int kc_kaiman_gui_run(void) {
         "addService", "setService", "testService", "serviceHealth",
         "removeService", "setListen",
         "startGateway", "stopGateway", "openDocumentation",
-        "openApiDocumentation", "quit"};
+        "openApiDocumentation", "quit"
+#ifdef KC_KAIMAN_UPDATE
+        , "updateStatus", "updateDownload"
+#endif
+    };
     kc_gui_state_t state;
     kc_wvw_t *wvw = NULL;
     kc_wvw_options_t options;
@@ -1373,6 +1543,12 @@ int kc_kaiman_gui_run(void) {
     state.tray = NULL;
     state.toggle = NULL;
     state.health = NULL;
+#ifdef KC_KAIMAN_UPDATE
+    memset(&state.update, 0, sizeof(state.update));
+    atomic_init(&state.update.phase, 0);
+    atomic_init(&state.update.release.received, 0U);
+    (void)gui_update_start(&state.update, 0);
+#endif
     url = gui_index_url();
 #ifdef _WIN32
     icon = gui_asset_path("tray-started.ico");
@@ -1488,6 +1664,10 @@ done:
     kc_tray_close(state.tray);
     kc_wvw_close(wvw);
     health_clear(&state);
+#ifdef KC_KAIMAN_UPDATE
+    gui_update_join(&state.update);
+    free(state.update.message);
+#endif
     gui_release();
     kc_kaiman_free(focus_path);
     kc_kaiman_free(quit_path);

@@ -53,11 +53,13 @@ typedef struct {
     kc_upstream_chunk_fn chunk;
     kc_upstream_status_fn status;
     void *userdata;
+    int stream_only;
 } kc_upstream_request_t;
 
 typedef struct {
     int status;
     char *content_type;
+    char *location;
     char *body;
     size_t body_size;
 } kc_upstream_response_t;

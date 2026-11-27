@@ -50,5 +50,8 @@ libraries and desktop assets when present.
 For example, `make dist linux/x86_64` creates
 `dist/kaiman-linux-x86_64.zip`.
 
+The ZIP entries are stored without compression so the desktop updater can
+extract distributions without an additional runtime dependency.
+
 The `dist/` directory is excluded from version control. Creating an archive
 does not compile, publish or upload a release.

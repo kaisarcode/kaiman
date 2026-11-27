@@ -105,6 +105,22 @@ The installed directory is recorded in `install.path` under the private state
 directory (`$XDG_STATE_HOME/kaiman` or `$HOME/.local/state/kaiman`).
 Only one installation per user is allowed.
 
+## Software updates
+
+The installed desktop application checks GitHub releases at startup, including
+pre-releases. A download icon appears beside the installed version when a newer
+release is available for the current platform. Open the update dialog and
+confirm the update to download and verify the release.
+
+The update uses the registered installation directory and preserves the menu
+entry, configuration, credentials and session state. It stops the application
+and gateway before replacing runtime files, retains a temporary backup for
+rollback, and opens the application again. The gateway can be started from the
+updated application.
+
+Updates require numeric release tags such as `v0.1.1` and a compatible ZIP
+asset with a SHA-256 digest published by GitHub.
+
 ## Desktop uninstallation
 
 Run `uninstaller` or `uninstaller.exe` from the installed directory or a

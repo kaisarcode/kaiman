@@ -238,8 +238,55 @@ select:focus-visible {
     overflow: auto;
 }
 
-#open-api {
+#open-api,
+#open-update {
     color: var(--link);
+}
+
+.version-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+#open-update {
+    width: 22px;
+    height: 22px;
+}
+
+#open-update svg {
+    width: 16px;
+    height: 16px;
+}
+
+.update-dialog {
+    width: min(460px, calc(100% - 32px));
+    overflow: auto;
+}
+
+.update-notes {
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 12px;
+    padding: var(--space-3);
+    border-radius: var(--radius);
+    background: var(--surface);
+    margin-bottom: var(--space-3);
+}
+
+#update-progress {
+    width: 100%;
+    accent-color: var(--primary);
+}
+
+#update-version {
+    color: var(--link);
+}
+
+#update-status[data-kind="error"] {
+    color: var(--error);
 }
 
 #open-api:hover:not(:disabled) {

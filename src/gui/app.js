@@ -13,6 +13,9 @@ var editedAuthentication = null;
 var slugTouched = false;
 var connectionRevision = 0;
 var serviceChecks = Object.create(null);
+var updateState = { phase: 0 };
+var updatePending = false;
+var updatePolling = false;
 
 /**
  * Find one element by its document identifier.
@@ -952,6 +955,108 @@ async function handleDocumentation(event) {
 }
 
 /**
+ * Render release metadata and the current update operation.
+ * @return void
+ */
+function renderUpdate() {
+    var phase = updateState.phase;
+    var active = phase === 4 || phase === 5;
+    var status = byId("update-status");
+    var progress = byId("update-progress");
+    var percent = updateState.size ?
+        Math.floor(100 * updateState.received / updateState.size) : 0;
+
+    byId("open-update").hidden = phase !== 1 && phase !== 6;
+    byId("update-installed").textContent = currentState.version || "";
+    byId("update-version").textContent = updateState.version || "";
+    byId("update-notes").textContent = updateState.notes || "";
+    byId("update-notes").hidden = !updateState.notes;
+    byId("update-confirm").disabled = active || updatePending;
+    byId("update-cancel").disabled = active || updatePending;
+    progress.hidden = !active;
+    progress.value = percent;
+    status.hidden = !active && phase !== 6;
+    status.setAttribute("data-kind", phase === 6 ? "error" : "info");
+    status.textContent = phase === 6 ? updateState.error :
+        phase === 5 ? "Applying update and restarting..." :
+        percent >= 100 ? "Verifying release..." :
+        "Downloading update... " + percent + "%";
+}
+
+/**
+ * Collect the asynchronous native update status.
+ * @return A promise resolving after the status is rendered.
+ */
+async function pollUpdate() {
+    if (updatePolling || !window.NativeBridge ||
+        !window.NativeBridge.updateStatus) return;
+    updatePolling = true;
+    try {
+        updateState = await bridge("updateStatus");
+        renderUpdate();
+        if (updateState.message) {
+            showMessage(updateState.message,
+                updateState.message.indexOf("Update complete") === 0 ?
+                "success" : "error");
+        }
+    } catch (error) {
+        if (byId("update-dialog").open) {
+            byId("update-status").textContent = describeError(error);
+            byId("update-status").hidden = false;
+        }
+    } finally {
+        updatePolling = false;
+    }
+}
+
+/**
+ * Open the available software update dialog.
+ * @return void
+ */
+function handleUpdate() {
+    renderUpdate();
+    byId("update-dialog").showModal();
+}
+
+/**
+ * Close the update dialog when no update is in progress.
+ * @return void
+ */
+function closeUpdate() {
+    if (updateState.phase !== 4 && updateState.phase !== 5 &&
+        !updatePending) byId("update-dialog").close();
+}
+
+/**
+ * Prevent Escape from closing an active update dialog.
+ * @param event Dialog cancellation event.
+ * @return void
+ */
+function cancelUpdate(event) {
+    if (updateState.phase === 4 || updateState.phase === 5 ||
+        updatePending) event.preventDefault();
+}
+
+/**
+ * Start the confirmed release download.
+ * @return A promise resolving after native handoff begins.
+ */
+async function confirmUpdate() {
+    updatePending = true;
+    renderUpdate();
+    try {
+        await bridge("updateDownload");
+        updateState.phase = 4;
+    } catch (error) {
+        updateState.phase = 6;
+        updateState.error = describeError(error);
+    } finally {
+        updatePending = false;
+        renderUpdate();
+    }
+}
+
+/**
  * Attach interface event listeners.
  * @return void
  */
@@ -963,6 +1068,10 @@ function bindEvents() {
         copies[index].addEventListener("click", handleApiCopy);
     }
     byId("open-api").addEventListener("click", handleApi);
+    byId("open-update").addEventListener("click", handleUpdate);
+    byId("update-confirm").addEventListener("click", confirmUpdate);
+    byId("update-cancel").addEventListener("click", closeUpdate);
+    byId("update-dialog").addEventListener("cancel", cancelUpdate);
     byId("api-documentation").addEventListener("click", handleApiDocumentation);
     byId("service-list").addEventListener("click", handleServiceSelect);
     byId("new-service").addEventListener("click", handleNew);
@@ -1009,3 +1118,4 @@ async function run() {
 
 run();
 setInterval(pollServices, 1000);
+setInterval(pollUpdate, 500);
