@@ -282,7 +282,7 @@ build-target: check-deps
 	rm -f "$$build_log"; \
 	if [ "$$build_status" -eq 0 ] && [ "$$system" = Linux ] && \
 		[ -n "$(TARGET_GUI)" ]; then \
-		chmod +x "$(OUT_DIR)/install" || exit 1; \
+		chmod +x "$(OUT_DIR)/installer" || exit 1; \
 	fi; \
 	exit "$$build_status"
 	@echo "OK kaiman $(TARGET)"
