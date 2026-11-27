@@ -252,11 +252,7 @@ select:focus-visible {
     overflow: visible;
 }
 
-.api-heading {
-    justify-content: flex-start;
-}
-
-.api-heading svg,
+.panel-heading > svg,
 .api-documentation svg {
     flex: none;
     width: 18px;
@@ -402,6 +398,9 @@ select:focus-visible {
 }
 
 .panel-heading h2 {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
     margin: 0;
     font-size: 15px;
     line-height: 1.3;
