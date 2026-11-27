@@ -567,7 +567,7 @@ int main(void) {
     options.width = &width;
     options.height = &height;
     options.borderless = &borderless;
-    options.background = "#141715";
+    options.background = "141715";
     options.hide_on_close = &hide_on_close;
     options.allow_file = 1;
     detail = "unable to open installer window";
