@@ -1929,7 +1929,7 @@ static int openai_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     const char *requested = kc_json_text(kc_json_member(root, "model"));
     const char *session = session_raw(service,
         kc_json_text(kc_json_member(root, "session")));
-    kc_upstream_field_t fields[3];
+    kc_upstream_field_t fields[2];
     size_t field_count = 0U;
     kc_upstream_request_t request;
     kc_upstream_response_t response;
@@ -1969,8 +1969,6 @@ static int openai_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
         fields[field_count++].value = authorization;
     }
     if (strcmp(service->adapter, "opencode-cloud") == 0) {
-        fields[field_count].name = "User-Agent";
-        fields[field_count++].value = "kaiman/" KC_KAIMAN_VERSION;
         if (session != NULL) {
             fields[field_count].name = "x-opencode-session";
             fields[field_count++].value = session;
@@ -3655,6 +3653,8 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
             messages, count);
     }
 respond:
+    free(text);
+    text = NULL;
     kc_mutex_unlock(&gateway->mutex);
 
     if (status != KC_KAIMAN_OK) {

@@ -304,6 +304,7 @@ static void test_mock_receive(kc_netl_peer_t *peer, const void *data,
         "\"model\":\"mock/model\",\"choices\":[{\"index\":0,\"delta\":"
         "{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"
         "data: [DONE]\n\n";
+    static unsigned int turns;
     char request[8192];
     char response[8192];
     const char *payload;
@@ -314,9 +315,73 @@ static void test_mock_receive(kc_netl_peer_t *peer, const void *data,
     if (size >= sizeof(request)) size = sizeof(request) - 1U;
     memcpy(request, data, size);
     request[size] = '\0';
-    if (strstr(request, "GET /opencode/api/model") != NULL) {
+    if (strstr(request, "GET /opencode/api/session/active") != NULL) {
+        payload = "{\"data\":{\"ses_busy\":{}}}";
+        content_type = "application/json";
+    } else if (strstr(request, "GET /opencode/api/session?") != NULL) {
+        if (strstr(request, "cursor=page%2Ftwo") != NULL) {
+            payload = "{\"data\":[{\"id\":\"ses_busy\",\"title\":\"Busy\"}],"
+                "\"cursor\":{\"next\":null}}";
+        } else {
+            payload = "{\"data\":[{\"id\":\"ses_demo\",\"title\":\"Demo\"}],"
+                "\"cursor\":{\"next\":\"page/two\"}}";
+        }
+        content_type = "application/json";
+    } else if (strstr(request, "POST /opencode/api/session/ses_demo/fork") !=
+        NULL) {
+        payload = "{\"data\":{\"id\":\"ses_fork\",\"title\":\"Demo fork\"}}";
+        content_type = "application/json";
+    } else if (strstr(request, "POST /opencode/api/session/ses_demo/model") !=
+        NULL) {
+        payload = "{}";
+        content_type = "application/json";
+    } else if (strstr(request, "POST /opencode/api/session/ses_demo/prompt") !=
+        NULL) {
+        turns++;
+        payload = "{}";
+        content_type = "application/json";
+    } else if (strstr(request, "GET /opencode/api/session/ses_demo/message") !=
+        NULL) {
+        if (turns == 0U) {
+            payload = "{\"data\":[{\"id\":\"msg_old\",\"type\":\"assistant\","
+                "\"content\":[{\"type\":\"text\",\"text\":\"old reply\"}]},"
+                "{\"id\":\"idle_old\",\"type\":\"idle\","
+                "\"outcome\":\"succeeded\"}]}";
+        } else if (turns == 1U) {
+            payload = "{\"data\":[{\"id\":\"msg_old\",\"type\":\"assistant\","
+                "\"content\":[{\"type\":\"text\",\"text\":\"old reply\"}]},"
+                "{\"id\":\"idle_old\",\"type\":\"idle\",\"outcome\":\"succeeded\"},"
+                "{\"id\":\"msg_new\",\"type\":\"assistant\","
+                "\"content\":[{\"type\":\"text\",\"text\":\"first reply\"}]},"
+                "{\"id\":\"idle_new\",\"type\":\"idle\","
+                "\"outcome\":\"succeeded\"}]}";
+        } else {
+            payload = "{\"data\":[{\"id\":\"msg_old\",\"type\":\"assistant\","
+                "\"content\":[{\"type\":\"text\",\"text\":\"old reply\"}]},"
+                "{\"id\":\"idle_old\",\"type\":\"idle\",\"outcome\":\"succeeded\"},"
+                "{\"id\":\"msg_new\",\"type\":\"assistant\","
+                "\"content\":[{\"type\":\"text\",\"text\":\"first reply\"}]},"
+                "{\"id\":\"idle_new\",\"type\":\"idle\",\"outcome\":\"succeeded\"},"
+                "{\"id\":\"msg_next\",\"type\":\"assistant\","
+                "\"content\":[{\"type\":\"text\",\"text\":\"second reply\"}]},"
+                "{\"id\":\"idle_next\",\"type\":\"idle\","
+                "\"outcome\":\"succeeded\"}]}";
+        }
+        content_type = "application/json";
+    } else if (strstr(request, "POST /opencode/api/session ") != NULL) {
+        payload = "{\"data\":{\"id\":\"ses_created\",\"title\":\"Test\"}}";
+        content_type = "application/json";
+    } else if (strstr(request, "GET /opencode/api/model") != NULL) {
         payload = "{\"data\":[{\"providerID\":\"opencode\","
             "\"id\":\"model-a\"},{\"providerID\":\"other\",\"modelID\":\"model-b\"}]}";
+        content_type = "application/json";
+    } else if (strstr(request, "POST /opencode-cloud/openai/v1/chat/completions") !=
+        NULL && strstr(request, "x-opencode-session: ses_cloud") != NULL) {
+        payload = completion;
+        content_type = "application/json";
+    } else if (strstr(request, "POST /opencode-cloud/openai/v1/chat/completions") !=
+        NULL && strstr(request, "\"content\":\"cloud session\"") != NULL) {
+        payload = "{\"error\":\"missing session header\"}";
         content_type = "application/json";
     } else if (strstr(request, "GET /opencode-cloud/v1/models") != NULL) {
         payload = "{\"data\":[{\"id\":\"model-a\",\"type\":\"chat\"},"
@@ -785,6 +850,89 @@ static int integration(const char *path) {
         result = 1;
     }
     free(response);
+    response = test_request("GET", "/v1/sessions?provider=opencode", NULL,
+        &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "\"id\":\"opencode/ses_demo\"") == NULL ||
+        strstr(response, "\"title\":\"Demo\",\"status\":\"idle\"") == NULL ||
+        strstr(response, "\"id\":\"opencode/ses_busy\"") == NULL ||
+        strstr(response, "\"title\":\"Busy\",\"status\":\"active\"") == NULL) {
+        fprintf(stderr, "session discovery failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("GET", "/v1/sessions?provider=mock", NULL, &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "{\"data\":[]}") == NULL) {
+        fprintf(stderr, "stateless provider session discovery failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/sessions",
+        "{\"model\":\"opencode/opencode/model-a\",\"title\":\"Test\"}", &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "\"id\":\"opencode/ses_created\"") == NULL ||
+        strstr(response, "\"title\":\"Test\"") == NULL) {
+        fprintf(stderr, "session creation failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/sessions/fork",
+        "{\"session\":\"opencode/ses_demo\",\"before\":\"msg_old\"}", &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "\"id\":\"opencode/ses_fork\"") == NULL) {
+        fprintf(stderr, "session fork failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/chat/completions",
+        "{\"model\":\"opencode/opencode/model-a\","
+        "\"session\":\"opencode/ses_demo\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"one\"}]}", &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "\"content\":\"first reply\"") == NULL ||
+        strstr(response, "old reply") != NULL) {
+        fprintf(stderr, "explicit session completion failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/chat/completions",
+        "{\"model\":\"opencode/opencode/model-a\","
+        "\"session\":\"opencode/ses_demo\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"two\"}]}", &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "\"content\":\"second reply\"") == NULL ||
+        strstr(response, "first reply") != NULL) {
+        fprintf(stderr, "session continuation failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/chat/completions",
+        "{\"model\":\"opencode/opencode/model-a\","
+        "\"session\":\"opencode/ses_busy\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"hi\"}]}", &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 409") == NULL) {
+        fprintf(stderr, "active session was not rejected\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/chat/completions",
+        "{\"model\":\"opencode/opencode/model-a\","
+        "\"session\":\"mock/ses_demo\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"hi\"}]}", &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 400") == NULL) {
+        fprintf(stderr, "mismatched session provider accepted\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/chat/completions",
+        "{\"model\":\"mock/model-a\",\"session\":\"mock/ses_demo\","
+        "\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 400") == NULL) {
+        fprintf(stderr, "unsupported session provider accepted\n");
+        result = 1;
+    }
+    free(response);
     response = test_request("GET", "/v1/models", NULL, &size);
     if (response == NULL || strstr(response, "\"id\":\"mock/model-a\"") == NULL ||
         strstr(response, "\"id\":\"mock/model-b\"") == NULL ||
@@ -809,6 +957,16 @@ static int integration(const char *path) {
         strstr(response, "\"model\":\"opencode-cloud/model-a\"") == NULL ||
         strstr(response, "\"content\":\"hello\"") == NULL) {
         fprintf(stderr, "OpenCode cloud completion failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("POST", "/v1/chat/completions",
+        "{\"model\":\"opencode-cloud/model-a\","
+        "\"session\":\"opencode-cloud/ses_cloud\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"cloud session\"}]}", &size);
+    if (response == NULL ||
+        strstr(response, "\"content\":\"hello\"") == NULL) {
+        fprintf(stderr, "OpenCode cloud session header failed\n");
         result = 1;
     }
     free(response);
