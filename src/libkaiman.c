@@ -5829,6 +5829,12 @@ int kc_kaiman_gateway_open(kc_kaiman_gateway_t **out, kc_kaiman_t *kaiman) {
     }
     memcpy(host, address, (size_t)(separator - address));
     host[separator - address] = '\0';
+    if (host[0] == '[' && host[separator - address - 1] == ']') {
+        size_t length = strlen(host);
+
+        memmove(host, host + 1, length - 2U);
+        host[length - 2U] = '\0';
+    }
     memset(&options, 0, sizeof(options));
     options.host = host;
     options.port = port;

@@ -91,26 +91,104 @@
                 <p id="connection-result" role="status" aria-live="polite" hidden></p>
             </form>
         </section>
-        <section class="panel panel-gateway" aria-labelledby="gateway-heading">
-            <div class="panel-heading">
-                <h2 id="gateway-heading">Gateway</h2>
-            </div>
-            <dl class="details">
-                <dt>State</dt>
-                <dd id="gateway-state" class="state state-idle">Loading</dd>
-                <dt>Address</dt>
-                <dd class="mono" id="gateway-address"></dd>
-                <dt>Configuration</dt>
-                <dd class="mono" id="config-path"></dd>
-                <dt>Version</dt>
-                <dd class="mono" id="version"></dd>
-            </dl>
-            <div class="field">
-                <label for="listen">Listen address</label>
-                <input id="listen" name="listen" type="text" autocomplete="off">
-            </div>
-            <button class="button" id="apply-listen" type="button">Save address</button>
-        </section>
+        <div class="gateway-column">
+            <section class="panel panel-gateway" aria-labelledby="gateway-heading">
+                <div class="panel-heading">
+                    <h2 id="gateway-heading">Gateway</h2>
+                </div>
+                <dl class="details">
+                    <dt>State</dt>
+                    <dd id="gateway-state" class="state state-idle">Loading</dd>
+                    <dt>Address</dt>
+                    <dd class="mono" id="gateway-address"></dd>
+                    <dt>Configuration</dt>
+                    <dd class="mono" id="config-path"></dd>
+                    <dt>Version</dt>
+                    <dd class="mono" id="version"></dd>
+                </dl>
+                <div class="field">
+                    <label for="listen">Listen address</label>
+                    <input id="listen" name="listen" type="text" autocomplete="off">
+                </div>
+                <button class="button" id="apply-listen" type="button">Save address</button>
+            </section>
+            <section class="panel panel-api" aria-labelledby="api-heading">
+                <div class="panel-heading api-heading">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 10 5-10 5L2 8l10-5Zm-10 9 10 5 10-5M2 16l10 5 10-5"/></svg>
+                    <h2 id="api-heading">API endpoints</h2>
+                </div>
+                <div class="api-base">
+                    <span class="api-label">Base URL</span>
+                    <div class="api-url">
+                        <code id="api-base-url">Unavailable</code>
+                        <button class="icon-button api-copy" type="button" data-path="/v1" aria-label="Copy base URL" title="Copy base URL" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v1"/></svg></button>
+                    </div>
+                </div>
+                <div class="api-list">
+                    <div class="api-endpoint">
+                        <span class="api-method api-get">GET</span>
+                        <div class="api-endpoint-detail">
+                            <code>/providers</code>
+                            <span>List configured providers</span>
+                        </div>
+                        <button class="icon-button api-copy" type="button" data-path="/v1/providers" aria-label="Copy GET /v1/providers" title="Copy GET /v1/providers" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v1"/></svg></button>
+                    </div>
+                    <div class="api-endpoint">
+                        <span class="api-method api-get">GET</span>
+                        <div class="api-endpoint-detail">
+                            <code>/models</code>
+                            <span>List available models</span>
+                        </div>
+                        <button class="icon-button api-copy" type="button" data-path="/v1/models" aria-label="Copy GET /v1/models" title="Copy GET /v1/models" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v1"/></svg></button>
+                    </div>
+                    <div class="api-endpoint">
+                        <span class="api-method api-get">GET</span>
+                        <div class="api-endpoint-detail">
+                            <code>/sessions</code>
+                            <span>List available sessions</span>
+                        </div>
+                        <button class="icon-button api-copy" type="button" data-path="/v1/sessions" aria-label="Copy GET /v1/sessions" title="Copy GET /v1/sessions" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v1"/></svg></button>
+                    </div>
+                    <div class="api-endpoint">
+                        <span class="api-method api-post">POST</span>
+                        <div class="api-endpoint-detail">
+                            <code>/sessions</code>
+                            <span>Create a new session</span>
+                        </div>
+                        <button class="icon-button api-copy" type="button" data-path="/v1/sessions" aria-label="Copy POST /v1/sessions" title="Copy POST /v1/sessions" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v1"/></svg></button>
+                    </div>
+                    <div class="api-endpoint">
+                        <span class="api-method api-post">POST</span>
+                        <div class="api-endpoint-detail">
+                            <code>/sessions/fork</code>
+                            <span>Fork an existing session</span>
+                        </div>
+                        <button class="icon-button api-copy" type="button" data-path="/v1/sessions/fork" aria-label="Copy POST /v1/sessions/fork" title="Copy POST /v1/sessions/fork" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v1"/></svg></button>
+                    </div>
+                    <div class="api-endpoint">
+                        <span class="api-method api-post">POST</span>
+                        <div class="api-endpoint-detail">
+                            <code>/chat/completions</code>
+                            <span>OpenAI-compatible chat</span>
+                        </div>
+                        <button class="icon-button api-copy" type="button" data-path="/v1/chat/completions" aria-label="Copy POST /v1/chat/completions" title="Copy POST /v1/chat/completions" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v1"/></svg></button>
+                    </div>
+                    <div class="api-endpoint">
+                        <span class="api-method api-get">GET</span>
+                        <div class="api-endpoint-detail">
+                            <code>/health</code>
+                            <span>Gateway health (root)</span>
+                        </div>
+                        <button class="icon-button api-copy" type="button" data-path="/health" aria-label="Copy GET /health" title="Copy GET /health" disabled><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16H3a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v1"/></svg></button>
+                    </div>
+                </div>
+                <a class="api-documentation" id="api-documentation" href="https://gitlab.com/kaisarcode/kaiman.c/-/blob/slave/doc/http-api.md">
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14M3 18V5c3-1 6-1 9 2 3-3 6-3 9-2v13c-3-1-6-1-9 2-3-3-6-3-9-2Z"/></svg>
+                    <span>API documentation</span>
+                    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6m0-6L10 14m8-1v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+                </a>
+            </section>
+        </div>
     </main>
     <footer class="status">
         <span class="copyright">© 2026 KaisarCode</span>

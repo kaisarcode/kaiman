@@ -221,7 +221,7 @@ select:focus-visible {
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: 260px minmax(320px, 1fr) 280px;
+    grid-template-columns: minmax(210px, 0.75fr) minmax(320px, 1.45fr) minmax(300px, 1fr);
     gap: var(--space-3);
     padding: var(--space-3);
 }
@@ -236,6 +236,159 @@ select:focus-visible {
     border-radius: var(--radius);
     padding: var(--space-4);
     overflow: auto;
+}
+
+.gateway-column {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+}
+
+.gateway-column > .panel {
+    flex: none;
+    overflow: visible;
+}
+
+.api-heading {
+    justify-content: flex-start;
+}
+
+.api-heading svg,
+.api-documentation svg {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    color: var(--link);
+}
+
+.api-base {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-bottom: var(--space-2);
+}
+
+.api-label {
+    font-size: 12px;
+    color: var(--secondary);
+    font-weight: 600;
+}
+
+.api-url {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    border: 1px solid var(--control-border);
+    background: var(--surface);
+    border-radius: var(--radius);
+    padding: var(--space-1) var(--space-2);
+}
+
+.api-url code {
+    flex: 1;
+    min-width: 0;
+    color: var(--link);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+
+.api-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.api-endpoint {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr) 28px;
+    gap: var(--space-2);
+    align-items: center;
+    padding: var(--space-2) 0;
+}
+
+.api-endpoint + .api-endpoint {
+    border-top: 1px solid var(--separator);
+}
+
+.api-method {
+    border: 1px solid currentColor;
+    border-radius: var(--radius);
+    padding: 2px 0;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.api-get {
+    color: var(--success);
+}
+
+.api-post {
+    color: var(--warning);
+}
+
+.api-endpoint-detail {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    gap: 2px;
+    overflow-wrap: anywhere;
+}
+
+.api-endpoint-detail code {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--foreground);
+}
+
+.api-endpoint-detail span {
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.api-copy.icon-button {
+    width: 28px;
+    height: 28px;
+}
+
+.api-copy.icon-button svg {
+    width: 16px;
+    height: 16px;
+}
+
+.api-documentation {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    border-top: 1px solid var(--separator);
+    margin-top: var(--space-2);
+    padding-top: var(--space-3);
+    color: var(--link);
+    text-decoration: none;
+    font-size: 13px;
+}
+
+.api-documentation span {
+    flex: 1;
+}
+
+.api-documentation:hover {
+    text-decoration: underline;
+}
+
+.clipboard-text {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 1px;
+    height: 1px;
+    opacity: 0;
+    pointer-events: none;
 }
 
 .panel-heading {
@@ -595,8 +748,9 @@ select:focus-visible {
         overflow: visible;
     }
 
-    .panel-gateway {
+    .gateway-column {
         grid-column: 1 / -1;
+        overflow: visible;
     }
 }
 
@@ -614,7 +768,7 @@ select:focus-visible {
         grid-template-columns: minmax(0, 1fr);
     }
 
-    .panel-gateway {
+    .gateway-column {
         grid-column: auto;
     }
 

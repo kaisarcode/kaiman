@@ -146,6 +146,7 @@ function setBusy(busy) {
     if (typeof currentState.running !== "boolean") {
         byId("toggle-gateway").disabled = true;
     }
+    renderApi(busy);
 }
 
 /**
@@ -425,6 +426,130 @@ function readForm() {
 }
 
 /**
+ * Resolve a client URL from a configured listener address.
+ * @param address Listener host and port.
+ * @return HTTP origin, or empty when no usable URL can be formed.
+ */
+function apiOrigin(address) {
+    var value = String(address || "").trim();
+    var separator = value.lastIndexOf(":");
+    var host = value.slice(0, separator);
+    var port = value.slice(separator + 1);
+    var parsed;
+    var zone;
+
+    if (separator < 1 || !/^\d+$/.test(port) ||
+        Number(port) < 1 || Number(port) > 65535) return "";
+    if (host.charAt(0) === "[" && host.slice(-1) === "]") {
+        host = host.slice(1, -1);
+    }
+    if (!host || /[\s\/?#@\\\[\]]/.test(host)) return "";
+    if (host.indexOf(":") !== -1) {
+        zone = host.indexOf("%");
+        if (zone !== -1) {
+            if (!/^[a-zA-Z0-9_.-]+$/.test(host.slice(zone + 1))) return "";
+            try {
+                parsed = new URL("http://[" + host.slice(0, zone) + "]");
+                return "http://" + parsed.hostname.slice(0, -1) +
+                    "%25" + encodeURIComponent(host.slice(zone + 1)) +
+                    "]:" + Number(port);
+            } catch (error) {
+                return "";
+            }
+        }
+        host = "[" + host + "]";
+    } else if (!/^[a-zA-Z0-9_.-]+$/.test(host)) {
+        return "";
+    }
+    try {
+        parsed = new URL("http://" + host);
+    } catch (error) {
+        return "";
+    }
+    host = parsed.hostname;
+    if (host === "0.0.0.0") host = "127.0.0.1";
+    if (host === "[::]") host = "[::1]";
+    return "http://" + host + ":" + Number(port);
+}
+
+/**
+ * Update the base URL and copy controls using the saved listener address.
+ * @param busy Whether another interface operation is active.
+ * @return void
+ */
+function renderApi(busy) {
+    var origin = apiOrigin(currentState.address);
+    var buttons = document.querySelectorAll(".api-copy");
+    var index;
+
+    byId("api-base-url").textContent = origin ? origin + "/v1" : "Unavailable";
+    for (index = 0; index < buttons.length; index++) {
+        buttons[index].disabled = busy || !origin;
+    }
+}
+
+/**
+ * Copy text on WebViews where the asynchronous clipboard API is unavailable.
+ * @param text Text to copy.
+ * @return True when the copy command succeeds.
+ */
+function copySelection(text) {
+    var input = document.createElement("textarea");
+    var focus = document.activeElement;
+    var copied = false;
+
+    input.className = "clipboard-text";
+    input.value = text;
+    input.readOnly = true;
+    document.body.appendChild(input);
+    try {
+        input.select();
+        copied = document.execCommand("copy");
+    } finally {
+        input.remove();
+        if (focus) focus.focus();
+    }
+    return copied;
+}
+
+/**
+ * Copy the full URL of the selected API endpoint.
+ * @param event Button activation event.
+ * @return A promise resolving after copying.
+ */
+async function handleApiCopy(event) {
+    var origin = apiOrigin(currentState.address);
+    var path = event.currentTarget.getAttribute("data-path");
+    var url;
+
+    if (!origin || !path) return;
+    url = origin + path;
+    try {
+        if (!copySelection(url)) {
+            if (!navigator.clipboard) throw new Error("Clipboard unavailable.");
+            await navigator.clipboard.writeText(url);
+        }
+        showMessage("URL copied.", "success");
+    } catch (error) {
+        showMessage("Unable to copy URL: " + describeError(error), "error");
+    }
+}
+
+/**
+ * Open the HTTP API reference in the system browser.
+ * @param event Link activation event.
+ * @return A promise resolving after the request completes.
+ */
+async function handleApiDocumentation(event) {
+    event.preventDefault();
+    try {
+        await bridge("openApiDocumentation", null);
+    } catch (error) {
+        showMessage(describeError(error), "error");
+    }
+}
+
+/**
  * Reload manager and gateway state.
  * @return A promise resolving after the interface is updated.
  */
@@ -443,10 +568,11 @@ async function refresh() {
     state.className = result.running ? "state state-running" :
         "state state-stopped";
     state.title = result.status || "";
-    setValue(byId("gateway-address"), result.address);
-    setValue(byId("config-path"), result.path);
-    setValue(byId("version"), result.version);
+    byId("gateway-address").textContent = result.address || "";
+    byId("config-path").textContent = result.path || "";
+    byId("version").textContent = result.version || "";
     setValue(byId("listen"), result.address);
+    renderApi(true);
 }
 
 /**
@@ -588,7 +714,8 @@ async function handleListen() {
         showMessage("A listen address is required.", "error");
         return;
     }
-    await perform("setListen", { listen: listen }, "Address saved.");
+    await perform("setListen", { listen: listen }, currentState.running ?
+        "Address saved. Restart gateway to apply." : "Address saved.");
 }
 
 /**
@@ -665,6 +792,13 @@ async function handleDocumentation(event) {
  * @return void
  */
 function bindEvents() {
+    var copies = document.querySelectorAll(".api-copy");
+    var index;
+
+    for (index = 0; index < copies.length; index++) {
+        copies[index].addEventListener("click", handleApiCopy);
+    }
+    byId("api-documentation").addEventListener("click", handleApiDocumentation);
     byId("service-list").addEventListener("click", handleServiceSelect);
     byId("new-service").addEventListener("click", handleNew);
     byId("service-form").addEventListener("submit", handleSubmit);

@@ -68,3 +68,11 @@ or save the service.
 The system tray uses dedicated padded icons. The icon is grayscale while the
 gateway is stopped and colored while it is running. The tray follows the
 gateway state, including changes made through the CLI.
+
+## API endpoints
+
+The desktop shows the configured API base URL and endpoint paths. Copy buttons
+copy full HTTP URLs, using `127.0.0.1` for IPv4 wildcard listeners and `[::1]`
+for IPv6 wildcard listeners. Specific interface addresses remain unchanged.
+The base URL includes `/v1`; the health endpoint is at `/health` on the origin.
+Restart a running gateway after saving a new listen address to apply it.

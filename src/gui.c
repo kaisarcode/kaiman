@@ -814,10 +814,12 @@ done:
 
 /**
  * Open the project documentation using the system browser.
+ * @param api Whether to open the HTTP API reference.
  * @return KC_KAIMAN_OK or an error status.
  */
-static int bridge_open_documentation(void) {
-    const char *url =
+static int bridge_open_documentation(int api) {
+    const char *url = api ?
+        "https://gitlab.com/kaisarcode/kaiman.c/-/blob/slave/doc/http-api.md" :
         "https://gitlab.com/kaisarcode/kaiman.c/-/blob/slave/README.md";
 #ifdef _WIN32
     if ((INT_PTR)ShellExecuteA(NULL, "open", url, NULL, NULL,
@@ -890,7 +892,9 @@ static int bridge_callback(kc_wvw_t *wvw, const char *method,
     } else if (strcmp(method, "stopGateway") == 0) {
         result = bridge_stop_gateway(state);
     } else if (strcmp(method, "openDocumentation") == 0) {
-        result = bridge_open_documentation();
+        result = bridge_open_documentation(0);
+    } else if (strcmp(method, "openApiDocumentation") == 0) {
+        result = bridge_open_documentation(1);
     } else if (strcmp(method, "quit") == 0) {
         result = bridge_quit(state);
     } else {
@@ -1123,7 +1127,8 @@ static void gui_signal(int signum) {
 int kc_kaiman_gui_run(void) {
     static const char *const methods[] = {"state", "theme", "setTheme",
         "addService", "setService", "testService", "removeService", "setListen",
-        "startGateway", "stopGateway", "openDocumentation", "quit"};
+        "startGateway", "stopGateway", "openDocumentation",
+        "openApiDocumentation", "quit"};
     kc_gui_state_t state;
     kc_wvw_t *wvw = NULL;
     kc_wvw_options_t options;
