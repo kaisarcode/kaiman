@@ -12,6 +12,7 @@ var themePending = false;
 var editedAuthentication = null;
 var slugTouched = false;
 var connectionRevision = 0;
+var serviceChecks = Object.create(null);
 
 /**
  * Find one element by its document identifier.
@@ -150,6 +151,132 @@ function setBusy(busy) {
 }
 
 /**
+ * Paint the saved health state without replacing the service item.
+ * @param name Configured service slug.
+ * @return void
+ */
+function renderServiceHealth(name) {
+    var items = byId("service-list").querySelectorAll(".service-item");
+    var check = serviceChecks[name];
+    var result = check ? check.result : null;
+    var label = "Not checked yet";
+    var index;
+    var dot;
+
+    if (result) {
+        label = result.online ? "Online: " + result.models +
+            (result.models === 1 ? " model" : " models") + " available." :
+            "Offline: " + (result.message || "Connection failed.");
+    }
+    for (index = 0; index < items.length; index++) {
+        if (items[index].getAttribute("data-name") !== name) continue;
+        dot = items[index].querySelector(".service-health");
+        dot.setAttribute("data-online", result && result.online ?
+            "true" : "false");
+        dot.setAttribute("aria-label", label);
+        dot.title = label;
+    }
+}
+
+/**
+ * Synchronize health checks with saved services and invalidate edited entries.
+ * @param services Current saved services.
+ * @return void
+ */
+function syncServiceHealth(services) {
+    var present = Object.create(null);
+    var index;
+    var service;
+    var check;
+    var signature;
+    var name;
+
+    for (index = 0; index < services.length; index++) {
+        service = services[index];
+        name = service.name;
+        present[name] = true;
+        signature = JSON.stringify(service);
+        check = serviceChecks[name];
+        if (!check) {
+            check = {
+                signature: signature,
+                revision: 0,
+                started: 0,
+                pending: false,
+                polling: false,
+                present: true,
+                next: 0,
+                result: null
+            };
+            serviceChecks[name] = check;
+        } else if (!check.present || check.signature !== signature) {
+            check.signature = signature;
+            check.revision++;
+            check.result = null;
+            check.next = 0;
+        }
+        check.present = true;
+    }
+    for (name in serviceChecks) {
+        check = serviceChecks[name];
+        if (present[name]) continue;
+        if (check.present) check.revision++;
+        check.present = false;
+        if (!check.pending && !check.polling) delete serviceChecks[name];
+    }
+}
+
+/**
+ * Start or collect one native service check without blocking other checks.
+ * @param name Configured service slug.
+ * @param check Mutable service health state.
+ * @return A promise resolving after one polling step.
+ */
+async function pollServiceHealth(name, check) {
+    var result;
+
+    check.polling = true;
+    if (!check.pending) check.started = check.revision;
+    try {
+        result = await bridge("serviceHealth", { name: name });
+    } catch (error) {
+        result = { online: false, message: describeError(error) };
+    }
+    check.pending = result.pending === true;
+    check.polling = false;
+    if (check.pending) return;
+    if (!check.present) {
+        delete serviceChecks[name];
+        return;
+    }
+    if (check.started !== check.revision) {
+        check.next = 0;
+        return;
+    }
+    check.result = result;
+    check.next = Date.now() + 30000;
+    renderServiceHealth(name);
+}
+
+/**
+ * Poll active checks and schedule independent checks every 30 seconds.
+ * @return void
+ */
+function pollServices() {
+    var now = Date.now();
+    var name;
+    var check;
+
+    for (name in serviceChecks) {
+        check = serviceChecks[name];
+        if (!check.polling && (check.pending ||
+            (check.present && check.next <= now))) {
+            pollServiceHealth(name, check);
+        }
+    }
+}
+
+/**
  * Render the configured services.
  * @param services Services from the state response.
  * @return void
@@ -160,6 +287,8 @@ function renderServices(services) {
     var item;
     var name;
     var detail;
+    var title;
+    var dot;
 
     list.textContent = "";
     if (services.length === 0) {
@@ -182,9 +311,17 @@ function renderServices(services) {
         item.type = "button";
         item.className = "service-item";
         item.setAttribute("data-name", services[index].name);
-        item.appendChild(name);
+        title = document.createElement("span");
+        title.className = "service-title";
+        dot = document.createElement("span");
+        dot.className = "service-health";
+        dot.setAttribute("role", "img");
+        title.appendChild(name);
+        title.appendChild(dot);
+        item.appendChild(title);
         item.appendChild(detail);
         list.appendChild(item);
+        renderServiceHealth(services[index].name);
     }
 }
 
@@ -563,7 +700,9 @@ async function refresh() {
     toggle.textContent = result.running ? "Stop" : "Start";
     toggle.classList.toggle("button-primary", !result.running);
     toggle.classList.toggle("button-danger", result.running);
+    syncServiceHealth(result.services || []);
     renderServices(result.services || []);
+    pollServices();
     state.textContent = result.running ? "Running" : "Stopped";
     state.className = result.running ? "state state-running" :
         "state state-stopped";
@@ -843,3 +982,4 @@ async function run() {
 }
 
 run();
+setInterval(pollServices, 1000);

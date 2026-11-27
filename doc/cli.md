@@ -76,3 +76,13 @@ copy full HTTP URLs, using `127.0.0.1` for IPv4 wildcard listeners and `[::1]`
 for IPv6 wildcard listeners. Specific interface addresses remain unchanged.
 The base URL includes `/v1`; the health endpoint is at `/health` on the origin.
 Restart a running gateway after saving a new listen address to apply it.
+
+## Service status
+
+The service list shows a green dot when model discovery succeeds and a gray
+dot when a check fails or has not finished. The tooltip reports the last
+result and model count or error. Saved services are checked independently
+at startup and 30 seconds after each completed check, including while the
+gateway is stopped. Edits invalidate the previous result. Automatic checks
+cap the configured upstream timeout at ten seconds per operation and do not
+send inference requests or modify credentials.

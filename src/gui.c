@@ -22,6 +22,7 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <process.h>
 #include <shellapi.h>
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
@@ -33,12 +34,28 @@
 #include <gio/gio.h>
 #endif
 
+typedef struct kc_health {
+    struct kc_health *next;
+    char *name;
+    char *message;
+    size_t models;
+    int status;
+    int done;
+    kc_mutex_t mutex;
+#ifdef _WIN32
+    HANDLE thread;
+#else
+    pthread_t thread;
+#endif
+} kc_health_t;
+
 typedef struct {
     volatile sig_atomic_t stop;
     volatile sig_atomic_t toggle_dirty;
     kc_wvw_t *wvw;
     kc_tray_t *tray;
     kc_tray_item_t *toggle;
+    kc_health_t *health;
 } kc_gui_state_t;
 
 static kc_gui_state_t *kc_gui_active = NULL;
@@ -454,6 +471,198 @@ done:
     kc_kaiman_close(kaiman);
     kc_json_free(params);
     return result;
+}
+
+/**
+ * Check a saved service using an independent manager and no inference.
+ * @param job Health check context.
+ * @return void
+ */
+static void health_run(kc_health_t *job) {
+    kc_kaiman_t *kaiman = NULL;
+    kc_kaiman_service_t *service = NULL;
+    kc_kaiman_descriptor_t descriptor;
+    const char *message;
+    size_t models = 0U;
+    int status;
+
+    status = kc_kaiman_open(&kaiman, NULL);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_kaiman_get_service(kaiman, job->name, &service);
+    }
+    if (status == KC_KAIMAN_OK) {
+        memset(&descriptor, 0, sizeof(descriptor));
+        descriptor.name = kc_kaiman_service_get(service, "name");
+        descriptor.adapter = kc_kaiman_service_get(service, "adapter");
+        descriptor.base_url = kc_kaiman_service_get(service, "url");
+        descriptor.auth_scheme = kc_kaiman_service_get(service, "scheme");
+        descriptor.auth_user = kc_kaiman_service_get(service, "user");
+        descriptor.timeout = kc_kaiman_service_timeout(service);
+        if (descriptor.timeout > 10) descriptor.timeout = 10;
+        status = kc_kaiman_service_test(kaiman, &descriptor, NULL, &models);
+    }
+    message = status == KC_KAIMAN_OK ? NULL : kc_kaiman_error(kaiman);
+    if (status != KC_KAIMAN_OK && message == NULL) {
+        message = kc_kaiman_strerror(status);
+    }
+    job->message = message != NULL ? kc_util_strdup(message) : NULL;
+    job->models = models;
+    job->status = status;
+    kc_kaiman_close(kaiman);
+    kc_mutex_lock(&job->mutex);
+    job->done = 1;
+    kc_mutex_unlock(&job->mutex);
+}
+
+#ifdef _WIN32
+/**
+ * Execute one service health check on a native worker.
+ * @param userdata Health check context.
+ * @return Thread exit code.
+ */
+static unsigned __stdcall health_worker(void *userdata) {
+    health_run((kc_health_t *)userdata);
+    return 0;
+}
+#else
+/**
+ * Execute one service health check on a native worker.
+ * @param userdata Health check context.
+ * @return NULL on completion.
+ */
+static void *health_worker(void *userdata) {
+    health_run((kc_health_t *)userdata);
+    return NULL;
+}
+#endif
+
+/**
+ * Start an independent check for one configured service.
+ * @param name Configured service slug.
+ * @return Owned job, or NULL on failure.
+ */
+static kc_health_t *health_start(const char *name) {
+    kc_health_t *job = (kc_health_t *)calloc(1, sizeof(*job));
+    int started;
+
+    if (job == NULL) return NULL;
+    job->name = kc_util_strdup(name);
+    if (job->name == NULL || kc_mutex_open(&job->mutex) != KC_KAIMAN_OK) {
+        free(job->name);
+        free(job);
+        return NULL;
+    }
+#ifdef _WIN32
+    job->thread = (HANDLE)_beginthreadex(NULL, 0, health_worker, job, 0, NULL);
+    started = job->thread != NULL;
+#else
+    started = pthread_create(&job->thread, NULL, health_worker, job) == 0;
+#endif
+    if (!started) {
+        kc_mutex_close(&job->mutex);
+        free(job->name);
+        free(job);
+        return NULL;
+    }
+    return job;
+}
+
+/**
+ * Join a health check and release its resources.
+ * @param job Owned job.
+ * @return void
+ */
+static void health_close(kc_health_t *job) {
+#ifdef _WIN32
+    (void)WaitForSingleObject(job->thread, INFINITE);
+    CloseHandle(job->thread);
+#else
+    (void)pthread_join(job->thread, NULL);
+#endif
+    kc_mutex_close(&job->mutex);
+    free(job->name);
+    free(job->message);
+    free(job);
+}
+
+/**
+ * Release service health checks on shutdown.
+ * @param state Active GUI state.
+ * @return void
+ */
+static void health_clear(kc_gui_state_t *state) {
+    while (state->health != NULL) {
+        kc_health_t *job = state->health;
+
+        state->health = job->next;
+        health_close(job);
+    }
+}
+
+/**
+ * Start or collect one asynchronous service health check.
+ * @param state Active GUI state.
+ * @param params_json Serialized service slug.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int bridge_health(kc_gui_state_t *state, const char *params_json) {
+    kc_json_value_t *params = NULL;
+    kc_health_t **entry;
+    kc_health_t *job;
+    kc_buffer_t *buffer = NULL;
+    const char *name;
+    int done;
+    int status;
+
+    status = parse_params(params_json, &params);
+    if (status != KC_KAIMAN_OK) goto finish;
+    name = require_string(params, "name");
+    if (state == NULL || name == NULL || *name == '\0') {
+        status = KC_KAIMAN_EINVAL;
+        goto finish;
+    }
+    entry = &state->health;
+    while (*entry != NULL && strcmp((*entry)->name, name) != 0) {
+        entry = &(*entry)->next;
+    }
+    if (*entry == NULL) {
+        *entry = health_start(name);
+        if (*entry == NULL) {
+            status = KC_KAIMAN_EIO;
+            goto finish;
+        }
+        status = set_result("{\"pending\":true}");
+        goto finish;
+    }
+    job = *entry;
+    kc_mutex_lock(&job->mutex);
+    done = job->done;
+    kc_mutex_unlock(&job->mutex);
+    if (!done) {
+        status = set_result("{\"pending\":true}");
+        goto finish;
+    }
+    status = kc_buffer_open(&buffer);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(buffer,
+            "{\"pending\":false,\"online\":%s,\"models\":%zu,\"message\":",
+            job->status == KC_KAIMAN_OK ? "true" : "false", job->models);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = append_json_string(buffer, job->message);
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}");
+    if (status == KC_KAIMAN_OK) status = set_result(kc_buffer_value(buffer));
+    *entry = job->next;
+    health_close(job);
+
+finish:
+    kc_buffer_close(buffer);
+    kc_json_free(params);
+    if (status != KC_KAIMAN_OK) {
+        (void)set_error(NULL, status, "Unable to check service status.");
+    }
+    return status;
 }
 
 /**
@@ -883,6 +1092,8 @@ static int bridge_callback(kc_wvw_t *wvw, const char *method,
         result = bridge_set_service(params_json);
     } else if (strcmp(method, "testService") == 0) {
         result = bridge_test_service(params_json);
+    } else if (strcmp(method, "serviceHealth") == 0) {
+        result = bridge_health(state, params_json);
     } else if (strcmp(method, "removeService") == 0) {
         result = bridge_remove_service(params_json);
     } else if (strcmp(method, "setListen") == 0) {
@@ -1126,7 +1337,8 @@ static void gui_signal(int signum) {
  */
 int kc_kaiman_gui_run(void) {
     static const char *const methods[] = {"state", "theme", "setTheme",
-        "addService", "setService", "testService", "removeService", "setListen",
+        "addService", "setService", "testService", "serviceHealth",
+        "removeService", "setListen",
         "startGateway", "stopGateway", "openDocumentation",
         "openApiDocumentation", "quit"};
     kc_gui_state_t state;
@@ -1158,6 +1370,7 @@ int kc_kaiman_gui_run(void) {
     state.wvw = NULL;
     state.tray = NULL;
     state.toggle = NULL;
+    state.health = NULL;
     url = gui_index_url();
 #ifdef _WIN32
     icon = gui_asset_path("logo.ico");
@@ -1264,6 +1477,7 @@ done:
     kc_gui_active = NULL;
     kc_tray_close(state.tray);
     kc_wvw_close(wvw);
+    health_clear(&state);
     gui_release();
     kc_kaiman_free(focus_path);
     kc_kaiman_free(url);
