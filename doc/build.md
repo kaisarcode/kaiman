@@ -41,8 +41,8 @@ make dist all
 ```
 
 The default target is the native platform. Specify one or more targets to
-package selected builds, or use `all` to package every supported target.
-Each selected target must already be built.
+package selected builds, or use `all` to package every already built target.
+Missing builds are skipped with `all`. Explicit targets must already be built.
 
 Archives contain the contents of the corresponding target directory in
 `bin/`, including the executable, libraries and desktop assets when present.

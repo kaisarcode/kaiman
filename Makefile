@@ -72,19 +72,17 @@ TARGET_GUI := $(if $(filter $(TARGET),$(GUI_TARGETS)),1,)
 ifneq ($(filter dist,$(MAKECMDGOALS)),)
 DIST_TARGETS := $(filter $(SUPPORTED_TARGETS),$(MAKECMDGOALS))
 ifneq ($(filter all,$(MAKECMDGOALS)),)
-DIST_TARGETS := $(SUPPORTED_TARGETS)
-endif
-ifeq ($(strip $(DIST_TARGETS)),)
+DIST_TARGETS := $(foreach target,$(SUPPORTED_TARGETS),$(if $(wildcard $(BIN_DIR)/$(target)/kaiman$(if $(filter windows/%,$(target)),.exe)),$(target)))
+else ifeq ($(strip $(DIST_TARGETS)),)
 DIST_TARGETS := $(NATIVE_TARGET)
 endif
 
-ifneq ($(filter-out dist all make $(SUPPORTED_TARGETS),$(MAKECMDGOALS)),)
+ifneq ($(filter-out dist all $(SUPPORTED_TARGETS),$(MAKECMDGOALS)),)
 $(error Invalid distribution target)
 endif
 
-.PHONY: make
-
 dist:
+	@test -n "$(strip $(DIST_TARGETS))" || { echo "No built targets found" >&2; exit 1; }
 	@command -v zip >/dev/null 2>&1 || { echo "Missing zip" >&2; exit 1; }
 	@for target in $(DIST_TARGETS); do \
 		executable=kaiman; \
@@ -102,7 +100,7 @@ dist:
 		echo "OK $(DIST_DIR)/$$name"; \
 	done
 
-all make $(SUPPORTED_TARGETS): dist
+all $(SUPPORTED_TARGETS): dist
 	@:
 
 else
