@@ -95,7 +95,10 @@ dist:
 	trap 'rm -rf "$$temp"' EXIT; \
 	for target in $(DIST_TARGETS); do \
 		name="kaiman-$$(printf '%s' "$$target" | tr / -).zip"; \
-		(cd "$(BIN_DIR)/$$target" && zip -qr "$$temp/$$name" .) || exit 1; \
+		mkdir "$$temp/kaiman" || exit 1; \
+		cp -a "$(BIN_DIR)/$$target/." "$$temp/kaiman/" || exit 1; \
+		(cd "$$temp" && zip -qr "$$name" kaiman) || exit 1; \
+		rm -rf "$$temp/kaiman" || exit 1; \
 		mv -f "$$temp/$$name" "$(DIST_DIR)/$$name" || exit 1; \
 		echo "OK $(DIST_DIR)/$$name"; \
 	done

@@ -44,8 +44,9 @@ The default target is the native platform. Specify one or more targets to
 package selected builds, or use `all` to package every already built target.
 Missing builds are skipped with `all`. Explicit targets must already be built.
 
-Archives contain the contents of the corresponding target directory in
-`bin/`, including the executable, libraries and desktop assets when present.
+Each archive contains a top-level `kaiman/` directory with the contents of
+the corresponding target directory in `bin/`, including the executable,
+libraries and desktop assets when present.
 For example, `make dist linux/x86_64` creates
 `dist/kaiman-linux-x86_64.zip`.
 
