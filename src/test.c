@@ -511,9 +511,22 @@ static int checks(const char *path) {
     printf("[2/" KC_TEST_TOTAL "] [PASS] add_and_get: managed service fields, identity and "
         "descriptor validation\n");
 
+    if (kc_kaiman_default_url("unknown") != NULL ||
+        strcmp(kc_kaiman_default_url("openai"),
+            "https://api.openai.com/v1") != 0 ||
+        kc_kaiman_service_set(service, "url", "") != KC_KAIMAN_OK ||
+        strcmp(kc_kaiman_service_get(service, "url"), "") != 0 ||
+        strcmp(kc_kaiman_service_url(service), "http://127.0.0.1:4096") != 0 ||
+        kc_kaiman_service_set(service, "adapter", "ollama") != KC_KAIMAN_OK ||
+        strcmp(kc_kaiman_service_url(service), "http://127.0.0.1:11434") != 0 ||
+        kc_kaiman_service_set(service, "adapter", "opencode") != KC_KAIMAN_OK) {
+        fprintf(stderr, "default URL resolution failed\n");
+        result = 1;
+    }
     status = kc_kaiman_service_set(service, "url", "http://127.0.0.1:49375");
     if (status != KC_KAIMAN_OK || strcmp(kc_kaiman_service_get(service,
-        "url"), "http://127.0.0.1:49375") != 0) {
+        "url"), "http://127.0.0.1:49375") != 0 ||
+        strcmp(kc_kaiman_service_url(service), "http://127.0.0.1:49375") != 0) {
         fprintf(stderr, "service set failed\n");
         result = 1;
     }

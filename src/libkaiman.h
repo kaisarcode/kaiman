@@ -178,6 +178,20 @@ const char *kc_kaiman_service_get(const kc_kaiman_service_t *service,
     const char *key);
 
 /**
+ * Return the default base URL for a supported adapter.
+ * @param adapter Adapter identifier.
+ * @return Borrowed default URL, or NULL for an unknown adapter.
+ */
+const char *kc_kaiman_default_url(const char *adapter);
+
+/**
+ * Resolve the effective base URL of a configured service.
+ * @param service Managed service.
+ * @return Borrowed explicit or default URL, or NULL when unavailable.
+ */
+const char *kc_kaiman_service_url(const kc_kaiman_service_t *service);
+
+/**
  * Borrow the configured request timeout of a service.
  * @param service Managed service.
  * @return Timeout in seconds, or zero for an invalid handle.

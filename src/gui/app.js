@@ -148,17 +148,27 @@ function renderAuthentication() {
 }
 
 /**
+ * Show the selected provider's default URL without filling the input.
+ * @return void
+ */
+function renderDefaultUrl() {
+    var provider = byId("field-adapter").value;
+    var defaults = currentState.defaults || {};
+
+    byId("field-url").placeholder = defaults[provider] || "";
+}
+
+/**
  * Apply connection defaults when choosing an OpenCode provider.
  * @return void
  */
 function handleProvider() {
     var provider = byId("field-adapter").value;
 
+    renderDefaultUrl();
     if (provider === "opencode-cloud") {
-        byId("field-url").value = "https://opencode.ai/inference";
         byId("field-scheme").value = "bearer";
     } else if (provider === "opencode") {
-        byId("field-url").value = "";
         byId("field-scheme").value = "basic";
         byId("field-user").value = "opencode";
     } else {
@@ -182,6 +192,7 @@ function clearForm() {
     byId("field-adapter").value = "openai";
     byId("field-scheme").value = "none";
     editedAuthentication = null;
+    renderDefaultUrl();
     renderAuthentication();
     byId("field-timeout").value = "60";
     byId("field-name").readOnly = false;
@@ -215,6 +226,7 @@ function fillForm(service) {
             service["token-command"])
     };
     byId("field-secret").value = "";
+    renderDefaultUrl();
     renderAuthentication();
     setValue(byId("field-timeout"), service.timeout);
     byId("field-name").readOnly = true;
@@ -244,9 +256,7 @@ function readForm() {
     }
     params.adapter = byId("field-adapter").value;
     params.scheme = byId("field-scheme").value;
-    if (byId("field-url").value !== "") {
-        params.url = byId("field-url").value;
-    }
+    params.url = byId("field-url").value.trim();
     params.secret = byId("field-secret").disabled ||
         byId("field-secret").value === "" ? null : byId("field-secret").value;
     params.user = byId("field-user").disabled ? "" :
@@ -266,6 +276,7 @@ async function refresh() {
     var toggle = byId("toggle-gateway");
 
     currentState = result;
+    renderDefaultUrl();
     toggle.textContent = result.running ? "Stop" : "Start";
     toggle.classList.toggle("button-primary", !result.running);
     toggle.classList.toggle("button-danger", result.running);

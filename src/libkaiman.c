@@ -186,6 +186,36 @@ static int valid_value(const char *value) {
 }
 
 /**
+ * Return the default base URL for a supported adapter.
+ * @param adapter Adapter identifier.
+ * @return Borrowed default URL, or NULL for an unknown adapter.
+ */
+const char *kc_kaiman_default_url(const char *adapter) {
+    static const struct {
+        const char *adapter;
+        const char *url;
+    } defaults[] = {
+        {"openai", "https://api.openai.com/v1"},
+        {"opencode", "http://127.0.0.1:4096"},
+        {"opencode-cloud", "https://opencode.ai/inference"},
+        {"anthropic", "https://api.anthropic.com/v1"},
+        {"gemini", "https://generativelanguage.googleapis.com/v1beta"},
+        {"responses", "https://api.openai.com/v1"},
+        {"ollama", "http://127.0.0.1:11434"},
+        {"bedrock", "https://bedrock-runtime.us-east-1.amazonaws.com"}
+    };
+    size_t index;
+
+    if (adapter == NULL) return NULL;
+    for (index = 0U; index < sizeof(defaults) / sizeof(defaults[0]); index++) {
+        if (strcmp(defaults[index].adapter, adapter) == 0) {
+            return defaults[index].url;
+        }
+    }
+    return NULL;
+}
+
+/**
  * Validate an HTTP or HTTPS URL.
  * @param value Candidate URL.
  * @return 1 when valid, 0 otherwise.
@@ -519,17 +549,13 @@ static int apply_field(kc_kaiman_service_t *service, const char *key,
         }
         target = &service->name;
     } else if (strcmp(key, "adapter") == 0) {
-        if (strcmp(value, "openai") != 0 && strcmp(value, "opencode") != 0 &&
-            strcmp(value, "anthropic") != 0 && strcmp(value, "gemini") != 0 &&
-            strcmp(value, "responses") != 0 && strcmp(value, "ollama") != 0 &&
-            strcmp(value, "bedrock") != 0 &&
-            strcmp(value, "opencode-cloud") != 0) {
+        if (kc_kaiman_default_url(value) == NULL) {
             set_error(kaiman, "unknown adapter: %s", value);
             return KC_KAIMAN_EINVAL;
         }
         target = &service->adapter;
     } else if (strcmp(key, "url") == 0 || strcmp(key, "base_url") == 0) {
-        if (!http_url(value)) {
+        if (*value != '\0' && !http_url(value)) {
             set_error(kaiman, "url must start with http:// or https://");
             return KC_KAIMAN_EINVAL;
         }
@@ -1104,7 +1130,7 @@ const char *kc_kaiman_service_get(const kc_kaiman_service_t *service,
     if (strcmp(key, "name") == 0) return service->name;
     if (strcmp(key, "adapter") == 0) return service->adapter;
     if (strcmp(key, "url") == 0 || strcmp(key, "base_url") == 0) {
-        return service->base_url;
+        return service->base_url != NULL ? service->base_url : "";
     }
     if (strcmp(key, "keyring") == 0) return service->keyring;
     if (strcmp(key, "env") == 0 || strcmp(key, "api_key_env") == 0) {
@@ -1121,6 +1147,19 @@ const char *kc_kaiman_service_get(const kc_kaiman_service_t *service,
         return service->auth_user;
     }
     return NULL;
+}
+
+/**
+ * Resolve the effective base URL of a configured service.
+ * @param service Managed service.
+ * @return Borrowed explicit or default URL, or NULL when unavailable.
+ */
+const char *kc_kaiman_service_url(const kc_kaiman_service_t *service) {
+    if (!service_valid(service)) return NULL;
+    if (service->base_url != NULL && *service->base_url != '\0') {
+        return service->base_url;
+    }
+    return kc_kaiman_default_url(service->adapter);
 }
 
 /**
@@ -1859,7 +1898,7 @@ static int openai_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
         free(authorization);
         return gateway_failure(gateway, peer, 400, "invalid chat request");
     }
-    url = api_url(service->base_url,
+    url = api_url(kc_kaiman_service_url(service),
         strcmp(service->adapter, "opencode-cloud") == 0 ?
             "/openai/v1/chat/completions" : "/chat/completions");
     if (url == NULL) {
@@ -1976,8 +2015,10 @@ static char *opencode_session_path(const kc_kaiman_service_t *service) {
     unsigned long long hash = 1469598103934665603ULL;
     char key[32];
 
-    if (!service_valid(service) || service->base_url == NULL) return NULL;
-    for (cursor = service->base_url; *cursor != '\0'; cursor++) {
+    const char *url = kc_kaiman_service_url(service);
+
+    if (url == NULL) return NULL;
+    for (cursor = url; *cursor != '\0'; cursor++) {
         hash ^= (unsigned char)*cursor;
         hash *= 1099511628211ULL;
     }
@@ -2151,7 +2192,7 @@ static int opencode_request(const kc_kaiman_service_t *service,
     memset(response, 0, sizeof(*response));
     status = service_authorization(service, &authorization);
     if (status != KC_KAIMAN_OK) return status;
-    url = api_url(service->base_url, path);
+    url = api_url(kc_kaiman_service_url(service), path);
     if (url == NULL) {
         free(authorization);
         return KC_KAIMAN_ENOMEM;
@@ -2717,13 +2758,13 @@ static char *native_url(const kc_kaiman_service_t *service, const char *model) {
     int status;
 
     if (strcmp(adapter, "anthropic") == 0) {
-        return api_url(service->base_url, "/messages");
+        return api_url(kc_kaiman_service_url(service), "/messages");
     }
     if (strcmp(adapter, "responses") == 0) {
-        return api_url(service->base_url, "/responses");
+        return api_url(kc_kaiman_service_url(service), "/responses");
     }
     if (strcmp(adapter, "ollama") == 0) {
-        return api_url(service->base_url, "/api/chat");
+        return api_url(kc_kaiman_service_url(service), "/api/chat");
     }
     if (gemini && strncmp(model, "models/", 7U) == 0) model += 7U;
     status = kc_buffer_open(&path);
@@ -2746,7 +2787,7 @@ static char *native_url(const kc_kaiman_service_t *service, const char *model) {
         status = kc_buffer_text(path, gemini ? ":generateContent" : "/converse");
     }
     if (status == KC_KAIMAN_OK) {
-        url = api_url(service->base_url, kc_buffer_value(path));
+        url = api_url(kc_kaiman_service_url(service), kc_buffer_value(path));
     }
     kc_buffer_close(path);
     return url;
@@ -3233,7 +3274,7 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     memset(messages, 0, sizeof(messages));
     memset(&stream, 0, sizeof(stream));
     kc_mutex_lock(&gateway->mutex);
-    if (!opencode_local(service->base_url)) {
+    if (!opencode_local(kc_kaiman_service_url(service))) {
         status = request_prompt(root, &text);
         if (status == KC_KAIMAN_OK) status = kc_buffer_open(&reply);
         if (status == KC_KAIMAN_OK) {
@@ -3814,9 +3855,9 @@ static int catalog_service(const kc_kaiman_service_t *service,
     size_t initial_count = *count;
     int status;
 
-    if (service->adapter == NULL || service->base_url == NULL) {
-        return KC_KAIMAN_EINVAL;
-    }
+    const char *url = kc_kaiman_service_url(service);
+
+    if (service->adapter == NULL || url == NULL) return KC_KAIMAN_EINVAL;
     status = service_authorization(service, &authorization);
     if (status != KC_KAIMAN_OK) return status;
     if (strcmp(service->adapter, "opencode") == 0) path = "/api/model";
@@ -3824,8 +3865,7 @@ static int catalog_service(const kc_kaiman_service_t *service,
     else if (strcmp(service->adapter, "ollama") == 0) path = "/api/tags";
     else if (strcmp(service->adapter, "bedrock") == 0) path = "/foundation-models";
     base = strcmp(service->adapter, "bedrock") == 0 ?
-        catalog_bedrock_base(service->base_url) :
-        kc_util_strdup(service->base_url);
+        catalog_bedrock_base(url) : kc_util_strdup(url);
     if (base == NULL) {
         kc_kaiman_free(authorization);
         return KC_KAIMAN_ENOMEM;

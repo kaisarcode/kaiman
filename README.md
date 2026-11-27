@@ -33,11 +33,16 @@ Every mutation persists immediately. Status codes follow the kclib convention:
 borrowed. A removed service handle stays allocated but becomes invalid.
 
 A service descriptor accepts a unique `name`, an `adapter` (see the adapter
-list below), an `http://` or `https://` URL, an optional
+list below), an optional `http://` or `https://` URL override, an optional
 credential reference (`env` or `token-command`), an `auth` scheme (`none`,
 `bearer` or `basic`), an optional `user`, and a `timeout` from 1 to 600
 seconds. Direct credentials are stored separately in the system credential store
 using `kc_kaiman_service_authenticate`.
+
+An omitted or empty URL selects the adapter default. `kc_kaiman_default_url()`
+returns that default; `kc_kaiman_service_url()` resolves the effective service
+URL. The `url` field contains only the explicit override. The GUI displays the
+default as a placeholder. Clearing an override restores the adapter default.
 
 ## JavaScript projection
 
@@ -175,7 +180,21 @@ unknown path or unknown model returns `404`; an oversized body returns `413`;
 and an unreachable or malformed upstream returns `502`. Upstream responses with
 status `400` or higher are propagated with their status, content type and body.
 
-Supported adapters:
+Supported adapters and default base URLs:
+
+| Adapter | Default URL |
+| --- | --- |
+| `openai` | `https://api.openai.com/v1` |
+| `opencode` | `http://127.0.0.1:4096` |
+| `opencode-cloud` | `https://opencode.ai/inference` |
+| `anthropic` | `https://api.anthropic.com/v1` |
+| `gemini` | `https://generativelanguage.googleapis.com/v1beta` |
+| `responses` | `https://api.openai.com/v1` |
+| `ollama` | `http://127.0.0.1:11434` |
+| `bedrock` | `https://bedrock-runtime.us-east-1.amazonaws.com` |
+
+Override the OpenCode Server URL when its port differs (see
+`opencode service status`). Override the Bedrock URL to select another region.
 
 - `openai` forwards chat requests to an OpenAI-compatible `/chat/completions`
     endpoint, removing the service prefix from the requested model and

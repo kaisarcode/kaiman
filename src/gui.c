@@ -229,6 +229,32 @@ static int apply_service_params(kc_kaiman_service_t *service,
 }
 
 /**
+ * Append the default URL map for the provider selector.
+ * @param buffer Destination state buffer.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int append_defaults(kc_buffer_t *buffer) {
+    static const char *const adapters[] = {"openai", "opencode",
+        "opencode-cloud", "anthropic", "gemini", "responses", "ollama",
+        "bedrock"};
+    size_t index;
+    int result;
+
+    result = kc_buffer_text(buffer, ",\"defaults\":{");
+    for (index = 0U; result == KC_KAIMAN_OK &&
+        index < sizeof(adapters) / sizeof(adapters[0]); index++) {
+        result = kc_buffer_format(buffer, "%s\"%s\":",
+            index == 0U ? "" : ",", adapters[index]);
+        if (result == KC_KAIMAN_OK) {
+            result = append_json_string(buffer,
+                kc_kaiman_default_url(adapters[index]));
+        }
+    }
+    if (result == KC_KAIMAN_OK) result = kc_buffer_text(buffer, "}");
+    return result;
+}
+
+/**
  * Serve the state bridge method.
  * @return KC_KAIMAN_OK or an error status.
  */
@@ -279,6 +305,7 @@ static int bridge_state(void) {
             running != 0 ? "true" : "false");
     }
     if (result == KC_KAIMAN_OK) result = append_services(buffer, kaiman);
+    if (result == KC_KAIMAN_OK) result = append_defaults(buffer);
     if (result == KC_KAIMAN_OK) result = kc_buffer_text(buffer, "}");
     if (result == KC_KAIMAN_OK) result = set_result(kc_buffer_value(buffer));
     kc_kaiman_free(description);

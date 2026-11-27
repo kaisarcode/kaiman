@@ -64,7 +64,8 @@ static void report_error(const kc_kaiman_t *kaiman, int status) {
 static void print_service(const kc_kaiman_service_t *service) {
     printf("%s\n", kc_kaiman_service_get(service, "name"));
     printf("  adapter: %s\n", kc_kaiman_service_get(service, "adapter"));
-    printf("  url: %s\n", kc_kaiman_service_get(service, "url"));
+    printf("  url: %s\n", kc_kaiman_service_url(service) != NULL ?
+        kc_kaiman_service_url(service) : "");
     printf("  env: %s\n", kc_kaiman_service_get(service, "env"));
     printf("  token-command: %s\n",
         kc_kaiman_service_get(service, "token-command"));
