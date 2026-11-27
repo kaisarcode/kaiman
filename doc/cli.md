@@ -54,3 +54,11 @@ projects, so nothing is copied into `bin/`.
 To keep the runtime elsewhere, set `KC_WEBVIEW2_DIR` to the Windows path Wine
 exposes, for example `Z:\home\USER\.local\share\webview2-runtime`. Adjust the
 `Z:` path when the prefix uses another drive mapping.
+
+## Test connection
+
+The desktop service editor provides a Test connection button beside Save.
+The check uses the current form, including unsaved connection settings and
+credentials, and displays the model count or an error below the buttons.
+It works while the gateway is stopped. It does not send an inference request
+or save the service.

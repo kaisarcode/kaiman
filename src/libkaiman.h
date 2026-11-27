@@ -192,6 +192,17 @@ const char *kc_kaiman_default_url(const char *adapter);
 const char *kc_kaiman_service_url(const kc_kaiman_service_t *service);
 
 /**
+ * Test a proposed service configuration by discovering its models.
+ * @param kaiman Open manager containing any saved credentials.
+ * @param descriptor Proposed service fields.
+ * @param secret Temporary credential, or NULL to use a saved source.
+ * @param count Receives the discovered model count.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_service_test(kc_kaiman_t *kaiman,
+    const kc_kaiman_descriptor_t *descriptor, const char *secret, size_t *count);
+
+/**
  * Borrow the configured request timeout of a service.
  * @param service Managed service.
  * @return Timeout in seconds, or zero for an invalid handle.

@@ -69,3 +69,13 @@ kmn.close();
 
 The projection is configuration-only. No WASM artifact is produced because
 `libnetl.c` has no WASM target.
+
+## Connection test
+
+`kc_kaiman_service_test()` discovers models using a proposed service descriptor
+and returns the number of models. An optional temporary credential overrides
+saved credential sources. With no supplied credential, a matching saved
+service and authentication scheme can supply the existing credential source.
+The test does not persist the descriptor, modify the credential store, start
+the gateway or send an inference request. An empty catalog is a successful
+connection with zero models.

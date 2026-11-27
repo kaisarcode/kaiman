@@ -824,8 +824,48 @@ static int integration(const char *path) {
         fprintf(stderr, "integration mock failed\n");
         goto done;
     }
-    if (kc_kaiman_open(&kaiman, &options) != KC_KAIMAN_OK ||
-        kc_kaiman_gateway_open(&gateway, kaiman) != KC_KAIMAN_OK) {
+    if (kc_kaiman_open(&kaiman, &options) != KC_KAIMAN_OK) {
+        fprintf(stderr, "integration configuration failed\n");
+        goto done;
+    }
+    {
+        size_t models = 0U;
+        size_t before_count = 0U;
+        size_t after_count = 0U;
+        kc_kaiman_service_t **items = NULL;
+
+        descriptor.name = "unsaved-test";
+        descriptor.adapter = "openai";
+        descriptor.base_url = "http://127.0.0.1:49382/openai";
+        descriptor.auth_scheme = "none";
+        if (kc_kaiman_get_services(kaiman, &items, &before_count) !=
+            KC_KAIMAN_OK ||
+            kc_kaiman_service_test(kaiman, &descriptor, NULL, &models) !=
+                KC_KAIMAN_OK || models != 2U ||
+            kc_kaiman_get_services(kaiman, &items, &after_count) !=
+                KC_KAIMAN_OK || before_count != after_count ||
+            kc_kaiman_get_service(kaiman, descriptor.name, &service) !=
+                KC_KAIMAN_NOT_FOUND) {
+            fprintf(stderr, "unsaved service test failed\n");
+            goto done;
+        }
+        descriptor.adapter = "invalid";
+        if (kc_kaiman_service_test(kaiman, &descriptor, NULL, &models) !=
+            KC_KAIMAN_EINVAL || models != 0U) {
+            fprintf(stderr, "invalid service test failed\n");
+            goto done;
+        }
+        descriptor.adapter = "openai";
+        descriptor.auth_scheme = "bearer";
+        if (kc_kaiman_service_test(kaiman, &descriptor, NULL, &models) !=
+            KC_KAIMAN_EINVAL ||
+            kc_kaiman_service_test(kaiman, &descriptor, "temporary", &models) !=
+                KC_KAIMAN_OK || models != 2U) {
+            fprintf(stderr, "temporary credential test failed\n");
+            goto done;
+        }
+    }
+    if (kc_kaiman_gateway_open(&gateway, kaiman) != KC_KAIMAN_OK) {
         fprintf(stderr, "integration gateway failed\n");
         goto done;
     }

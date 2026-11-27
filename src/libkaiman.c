@@ -4701,6 +4701,118 @@ static int catalog_service(const kc_kaiman_service_t *service,
 }
 
 /**
+ * Test a proposed service configuration by discovering its models.
+ * @param kaiman Open manager containing any saved credentials.
+ * @param descriptor Proposed service fields.
+ * @param secret Temporary credential, or NULL to use a saved source.
+ * @param count Receives the discovered model count.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+int kc_kaiman_service_test(kc_kaiman_t *kaiman,
+    const kc_kaiman_descriptor_t *descriptor, const char *secret, size_t *count) {
+    static const char *const keys[] = {"adapter", "url", "env",
+        "token-command", "scheme", "user"};
+    const char *values[6];
+    kc_kaiman_service_t preview;
+    kc_kaiman_service_t *saved;
+    kc_buffer_t *buffer = NULL;
+    const char *scheme;
+    size_t index;
+    int local;
+    int status = KC_KAIMAN_OK;
+
+    if (count != NULL) *count = 0U;
+    if (kaiman == NULL || descriptor == NULL || count == NULL ||
+        !valid_name(descriptor->name) || descriptor->adapter == NULL ||
+        descriptor->timeout < 0 || descriptor->timeout > 600) {
+        set_error(kaiman, "invalid service configuration");
+        return KC_KAIMAN_EINVAL;
+    }
+    free(kaiman->error);
+    kaiman->error = NULL;
+    memset(&preview, 0, sizeof(preview));
+    preview.owner = kaiman;
+    preview.alive = 1;
+    preview.timeout = descriptor->timeout != 0 ?
+        descriptor->timeout : DEFAULT_TIMEOUT;
+    preview.name = copy_text(descriptor->name);
+    if (preview.name == NULL) return KC_KAIMAN_ENOMEM;
+    saved = find_service(kaiman, descriptor->name);
+    local = strcmp(descriptor->adapter, "opencode-local") == 0 ||
+        strcmp(descriptor->adapter, "codex-local") == 0;
+    scheme = local ? "none" : descriptor->auth_scheme != NULL ?
+        descriptor->auth_scheme : "bearer";
+    values[0] = descriptor->adapter;
+    values[1] = local ? "" : descriptor->base_url;
+    values[2] = descriptor->api_key_env;
+    values[3] = descriptor->token_command;
+    values[4] = scheme;
+    values[5] = descriptor->auth_user;
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < sizeof(keys) / sizeof(keys[0]); index++) {
+        if (values[index] != NULL) {
+            status = apply_field(&preview, keys[index], values[index]);
+        }
+    }
+    if (status != KC_KAIMAN_OK) goto done;
+    if (!local && strcmp(scheme, "basic") == 0 &&
+        (preview.auth_user == NULL || *preview.auth_user == '\0' ||
+            strchr(preview.auth_user, ':') != NULL)) {
+        set_error(kaiman, "a valid username is required");
+        status = KC_KAIMAN_EINVAL;
+        goto done;
+    }
+    if (!local && strcmp(scheme, "none") != 0) {
+        if (secret != NULL) {
+            if (*secret == '\0' || !valid_value(secret)) {
+                set_error(kaiman, "invalid credential");
+                status = KC_KAIMAN_EINVAL;
+                goto done;
+            }
+            preview.local_password = secret;
+        } else if (preview.api_key_env == NULL &&
+            preview.token_command == NULL && saved != NULL &&
+            saved->auth_scheme != NULL &&
+            strcmp(saved->auth_scheme, scheme) == 0) {
+            if (saved->api_key_env != NULL) {
+                status = apply_field(&preview, "env", saved->api_key_env);
+            }
+            if (status == KC_KAIMAN_OK && saved->token_command != NULL) {
+                status = apply_field(&preview, "token-command",
+                    saved->token_command);
+            }
+            if (status == KC_KAIMAN_OK && saved->keyring != NULL) {
+                status = apply_field(&preview, "keyring", saved->keyring);
+            }
+        }
+        if (status == KC_KAIMAN_OK && preview.local_password == NULL &&
+            (preview.api_key_env == NULL || *preview.api_key_env == '\0') &&
+            (preview.token_command == NULL || *preview.token_command == '\0') &&
+            (preview.keyring == NULL || *preview.keyring == '\0')) {
+            set_error(kaiman, "a credential is required");
+            status = KC_KAIMAN_EINVAL;
+        }
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_open(&buffer);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(buffer, "[");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = catalog_service(&preview, buffer, count);
+        if (status != KC_KAIMAN_OK) {
+            set_error(kaiman, "model discovery failed: %s",
+                kc_kaiman_strerror(status));
+        }
+    }
+
+done:
+    if (status != KC_KAIMAN_OK) *count = 0U;
+    kc_buffer_close(buffer);
+    service_fields_clear(&preview);
+    return status;
+}
+
+/**
  * Decode a single hexadecimal URL escape digit.
  * @param byte ASCII character.
  * @return Digit value, or -1 on failure.

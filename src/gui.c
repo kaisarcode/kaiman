@@ -400,6 +400,57 @@ done:
 }
 
 /**
+ * Test current service fields without saving them or starting the gateway.
+ * @param params_json Serialized service parameters.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int bridge_test_service(const char *params_json) {
+    kc_json_value_t *params = NULL;
+    kc_kaiman_t *kaiman = NULL;
+    kc_kaiman_descriptor_t descriptor;
+    const char *secret;
+    double timeout;
+    size_t count = 0U;
+    char response[96];
+    int result;
+
+    result = parse_params(params_json, &params);
+    if (result != KC_KAIMAN_OK) goto done;
+    memset(&descriptor, 0, sizeof(descriptor));
+    descriptor.name = require_string(params, "name");
+    descriptor.adapter = require_string(params, "adapter");
+    descriptor.base_url = require_string(params, "url");
+    descriptor.auth_scheme = require_string(params, "scheme");
+    descriptor.auth_user = require_string(params, "user");
+    secret = require_string(params, "secret");
+    timeout = kc_json_number(kc_json_member(params, "timeout"));
+    if (kc_json_type(params) != KC_JSON_OBJECT ||
+        descriptor.name == NULL || descriptor.adapter == NULL ||
+        descriptor.base_url == NULL || descriptor.auth_scheme == NULL ||
+        descriptor.auth_user == NULL || timeout < 1.0 || timeout > 600.0 ||
+        timeout != (double)(int)timeout) {
+        result = KC_KAIMAN_EINVAL;
+        goto done;
+    }
+    descriptor.timeout = (int)timeout;
+    result = kc_kaiman_open(&kaiman, NULL);
+    if (result == KC_KAIMAN_OK) {
+        result = kc_kaiman_service_test(kaiman, &descriptor, secret, &count);
+    }
+    if (result == KC_KAIMAN_OK) {
+        (void)snprintf(response, sizeof(response),
+            "{\"ok\":true,\"models\":%zu}", count);
+        result = set_result(response);
+    }
+
+done:
+    if (result != KC_KAIMAN_OK) (void)set_error(kaiman, result, NULL);
+    kc_kaiman_close(kaiman);
+    kc_json_free(params);
+    return result;
+}
+
+/**
  * Serve the removeService bridge method.
  * @param params_json Serialized parameters.
  * @return KC_KAIMAN_OK or an error status.
@@ -753,6 +804,8 @@ static int bridge_callback(kc_wvw_t *wvw, const char *method,
         result = bridge_add_service(params_json);
     } else if (strcmp(method, "setService") == 0) {
         result = bridge_set_service(params_json);
+    } else if (strcmp(method, "testService") == 0) {
+        result = bridge_test_service(params_json);
     } else if (strcmp(method, "removeService") == 0) {
         result = bridge_remove_service(params_json);
     } else if (strcmp(method, "setListen") == 0) {
@@ -895,7 +948,7 @@ static void gui_signal(int signum) {
  */
 int kc_kaiman_gui_run(void) {
     static const char *const methods[] = {"state", "theme", "setTheme",
-        "addService", "setService", "removeService", "setListen",
+        "addService", "setService", "testService", "removeService", "setListen",
         "startGateway", "stopGateway", "openDocumentation", "quit"};
     kc_gui_state_t state;
     kc_wvw_t *wvw = NULL;

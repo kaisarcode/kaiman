@@ -11,6 +11,7 @@ var currentState = { services: [] };
 var themePending = false;
 var editedAuthentication = null;
 var slugTouched = false;
+var connectionRevision = 0;
 
 /**
  * Find one element by its document identifier.
@@ -263,6 +264,62 @@ function handleProvider() {
 }
 
 /**
+ * Display the result of a connection check in the service editor.
+ * @param text Status text, or empty to hide the result.
+ * @param kind Status kind.
+ * @return void
+ */
+function showConnection(text, kind) {
+    var result = byId("connection-result");
+
+    result.textContent = text;
+    result.setAttribute("data-kind", kind);
+    result.hidden = text === "";
+}
+
+/**
+ * Invalidate the previous result when service fields change.
+ * @return void
+ */
+function clearConnection() {
+    connectionRevision++;
+    showConnection("", "info");
+}
+
+/**
+ * Check the current service fields without applying changes.
+ * @return A promise resolving after the test completes.
+ */
+async function handleTestConnection() {
+    var params;
+    var result;
+    var revision;
+
+    if (!byId("service-form").reportValidity()) return;
+    params = readForm();
+    if (params === null) return;
+    revision = ++connectionRevision;
+    setBusy(true);
+    showConnection("Testing connection...", "info");
+    try {
+        result = await bridge("testService", params);
+        if (revision === connectionRevision) {
+            showConnection("Connection successful. " + result.models +
+                (result.models === 1 ? " model" : " models") +
+                " available.", "success");
+        }
+    } catch (error) {
+        if (revision === connectionRevision) {
+            showConnection("Connection failed: " + describeError(error),
+                "error");
+        }
+    } finally {
+        params.secret = null;
+        setBusy(false);
+    }
+}
+
+/**
  * Reset the service form to its add state.
  * @return void
  */
@@ -271,6 +328,7 @@ function clearForm() {
     var items = document.querySelectorAll(".service-item");
     var index;
 
+    clearConnection();
     form.reset();
     slugTouched = false;
     setValue(byId("field-display-name"), "");
@@ -300,6 +358,7 @@ function fillForm(service) {
     var items = document.querySelectorAll(".service-item");
     var index;
 
+    clearConnection();
     setValue(byId("field-slug"), service.name);
     for (index = 0; index < fields.length; index++) {
         setValue(byId("field-" + fields[index]), service[fields[index]]);
@@ -609,6 +668,9 @@ function bindEvents() {
     byId("service-list").addEventListener("click", handleServiceSelect);
     byId("new-service").addEventListener("click", handleNew);
     byId("service-form").addEventListener("submit", handleSubmit);
+    byId("service-form").addEventListener("input", clearConnection);
+    byId("service-form").addEventListener("change", clearConnection);
+    byId("test-service").addEventListener("click", handleTestConnection);
     byId("field-adapter").addEventListener("change", handleProvider);
     byId("field-display-name").addEventListener("input",
         refreshSlugPlaceholder);
