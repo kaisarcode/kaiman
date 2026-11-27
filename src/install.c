@@ -190,8 +190,10 @@ static int install_copy(const char *source, const char *directory,
     char *from = install_join(source, name);
     char *to = install_join(directory, name);
     struct stat src;
-    struct stat dst;
     int result = 0;
+#ifndef _WIN32
+    struct stat dst;
+#endif
 
     if (from == NULL || to == NULL || stat(from, &src) != 0 ||
         !S_ISREG(src.st_mode)) goto done;
@@ -241,9 +243,6 @@ static int install_copy(const char *source, const char *directory,
 #endif
 
 done:
-#ifdef _WIN32
-    (void)dst;
-#endif
     free(from);
     free(to);
     return result;
@@ -323,7 +322,8 @@ static const char *install_runtime(kc_install_t *state, const char *directory,
         static const char *const optional[] = {"libgcc_s_seh-1.dll",
             "libstdc++-6.dll", "libwinpthread-1.dll"};
 
-        for (index = 0U; index < sizeof(optional) / sizeof(optional[0]); index++) {
+        for (index = 0U; index < sizeof(optional) / sizeof(optional[0]);
+            index++) {
             char *path = install_join(state->source, optional[index]);
             struct stat info;
             int exists = path != NULL && stat(path, &info) == 0;
@@ -383,7 +383,8 @@ static char *install_browse(void) {
     char *path = NULL;
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-        char *selected = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        char *selected = gtk_file_chooser_get_filename(
+            GTK_FILE_CHOOSER(dialog));
 
         path = kc_util_strdup(selected);
         g_free(selected);
@@ -467,8 +468,8 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
             message = "Invalid installation parameters.";
         } else {
             message = install_runtime(state,
-                kc_json_string(kc_json_member(params, "directory")),
-                kc_json_string(kc_json_member(params, "category")));
+                kc_json_text(kc_json_member(params, "directory")),
+                kc_json_text(kc_json_member(params, "category")));
         }
     } else {
         return KC_WVW_ERROR;

@@ -4,7 +4,7 @@ body.installer {
     height: auto;
     background: var(--panel);
     border: 1px solid var(--border);
-    padding: 16px var(--space-5);
+    padding: 12px var(--space-5);
     position: relative;
 }
 
@@ -16,7 +16,7 @@ body.installer {
 
 .installer-brand {
     text-align: center;
-    margin-bottom: var(--space-4);
+    margin-bottom: var(--space-3);
 }
 
 .installer-brand img {
@@ -81,7 +81,7 @@ body.installer {
 .install-button {
     align-self: center;
     min-width: 132px;
-    margin-top: var(--space-2);
+    margin-top: var(--space-1);
 }
 
 #install-result {
