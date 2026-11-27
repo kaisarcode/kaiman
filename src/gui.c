@@ -528,24 +528,36 @@ done:
 
 /**
  * Serve the startGateway bridge method.
+ * @param state Active GUI state.
  * @return KC_KAIMAN_OK or an error status.
  */
-static int bridge_start_gateway(void) {
+static int bridge_start_gateway(kc_gui_state_t *state) {
     int result = kc_kaiman_start(NULL);
 
-    if (result == KC_KAIMAN_OK) return set_success();
+    if (result == KC_KAIMAN_OK) {
+        if (state != NULL && state->toggle != NULL) {
+            (void)kc_tray_item_set_text(state->toggle, "Stop");
+        }
+        return set_success();
+    }
     (void)set_error(NULL, result, NULL);
     return result;
 }
 
 /**
  * Serve the stopGateway bridge method.
+ * @param state Active GUI state.
  * @return KC_KAIMAN_OK or an error status.
  */
-static int bridge_stop_gateway(void) {
+static int bridge_stop_gateway(kc_gui_state_t *state) {
     int result = kc_kaiman_stop();
 
-    if (result == KC_KAIMAN_OK) return set_success();
+    if (result == KC_KAIMAN_OK) {
+        if (state != NULL && state->toggle != NULL) {
+            (void)kc_tray_item_set_text(state->toggle, "Start");
+        }
+        return set_success();
+    }
     (void)set_error(NULL, result, NULL);
     return result;
 }
@@ -597,14 +609,16 @@ static void tray_open(kc_tray_item_t *item, void *userdata) {
  * @return void
  */
 static void tray_toggle(kc_tray_item_t *item, void *userdata) {
+    int result;
+
     (void)userdata;
     if (item == NULL) return;
     if (gateway_running() != 0) {
-        (void)kc_kaiman_stop();
-        (void)kc_tray_item_set_text(item, "Start");
+        result = kc_kaiman_stop();
+        if (result == KC_KAIMAN_OK) (void)kc_tray_item_set_text(item, "Start");
     } else {
-        (void)kc_kaiman_start(NULL);
-        (void)kc_tray_item_set_text(item, "Stop");
+        result = kc_kaiman_start(NULL);
+        if (result == KC_KAIMAN_OK) (void)kc_tray_item_set_text(item, "Stop");
     }
 }
 
@@ -875,9 +889,9 @@ static int bridge_callback(kc_wvw_t *wvw, const char *method,
     } else if (strcmp(method, "setListen") == 0) {
         result = bridge_set_listen(params_json);
     } else if (strcmp(method, "startGateway") == 0) {
-        result = bridge_start_gateway();
+        result = bridge_start_gateway(state);
     } else if (strcmp(method, "stopGateway") == 0) {
-        result = bridge_stop_gateway();
+        result = bridge_stop_gateway(state);
     } else if (strcmp(method, "openDocumentation") == 0) {
         result = bridge_open_documentation();
     } else if (strcmp(method, "quit") == 0) {
