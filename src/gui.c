@@ -1085,14 +1085,19 @@ static int bridge_open_documentation(int api) {
 
 #ifdef KC_KAIMAN_UPDATE
 
+#ifdef _WIN32
 /**
  * Check for releases or download the selected release on a worker thread.
  * @param userdata GUI update context.
  * @return Platform thread result.
  */
-#ifdef _WIN32
 static DWORD WINAPI gui_update_worker(void *userdata) {
 #else
+/**
+ * Check for releases or download the selected release on a worker thread.
+ * @param userdata GUI update context.
+ * @return Platform thread result.
+ */
 static void *gui_update_worker(void *userdata) {
 #endif
     kc_gui_update_t *job = (kc_gui_update_t *)userdata;
