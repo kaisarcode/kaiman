@@ -113,6 +113,7 @@ set(KC_SOURCES
     src/util.c
     src/upstream.c
     src/keyring.c
+    src/child.c
 )
 
 add_library(kaiman_static STATIC ${KC_SOURCES})
