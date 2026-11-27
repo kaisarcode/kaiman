@@ -36,11 +36,9 @@ Use `kaiman gui` to manage providers and the gateway from the desktop.
 ## Dependencies
 
 Dependencies are vendored under `lib/kaisarcode`, following the embdex
-mechanism: `libhttp.c`, `libnetl.c`, `libtls.c` and `libwvw.c`. No runtime
-dependency is installed system-wide. The shared library loads `libtls` from its
-own directory; the static CLI links `libtls` statically. The GUI links `libwvw`
-statically into the CLI only for `linux/x86_64`, `windows/x86_64`,
-`macos/x86_64` and `macos/aarch64`.
+mechanism: `libhttp.c`, `libnetl.c`, `libtls.c`, `libwvw.c` and `libtray.c`.
+No runtime dependency is installed system-wide. The shared library and CLI load
+every dependency from their own directory.
 
 ## Build
 

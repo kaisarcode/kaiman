@@ -117,7 +117,8 @@ define ios_target
 $(1)/$(2):
 	@test -d "$(5)" || { echo "kaiman: missing iOS SDK: $(5)" >&2; exit 1; }
 	@$(MAKE) -s --no-print-directory build-target TARGET=$(1)/$(2) \
-		TARGET_CC="$(3)" TARGET_AR="$(4)" TARGET_EXT=dylib TARGET_LIBRARY_ONLY=1 \
+		TARGET_CC="$(3)" TARGET_AR="$(4)" TARGET_EXT=dylib \
+		TARGET_SHARED="-dynamiclib -Wl,-install_name,@rpath/libkaiman.dylib" \
 		TARGET_CFLAGS="-fPIC -isysroot $(5) $(6) -Wno-unused-command-line-argument" \
 		TARGET_SDK="$(5)" TARGET_SYSTEM_LIBS="$(DARWIN_SYSTEM_LIBS)"
 endef
@@ -142,13 +143,13 @@ DEP_NAMES := http netl tls
 ifneq ($(strip $(TARGET_GUI)),)
 DEP_NAMES += wvw tray
 endif
-TLS_SHARED_NAME := libtls.so
-TLS_IMPORT_NAME :=
+DEP_SHARED_EXT := so
+DEP_IMPORT_EXT :=
 ifeq ($(findstring windows/,$(TARGET)),windows/)
-TLS_SHARED_NAME := libtls.dll
-TLS_IMPORT_NAME := libtls.dll.a
+DEP_SHARED_EXT := dll
+DEP_IMPORT_EXT := .dll.a
 else ifneq ($(filter macos/% ios/% iossim/%,$(TARGET)),)
-TLS_SHARED_NAME := libtls.dylib
+DEP_SHARED_EXT := dylib
 endif
 DEP_PATHS := $(foreach dep,$(DEP_NAMES),$(DEP_ROOT)/lib$(dep).c)
 DEP_LIB_DIR = $(BUILD_DIR)/deps/$(TARGET)
@@ -178,22 +179,20 @@ deps: submodules
 		if ! cmp -s "$$source" "$$target"; then \
 			cp "$$source" "$$target" || { rm -f "$$log"; exit 1; }; \
 		fi; \
-		if [ "$$name" = "tls" ] && [ -z "$(TARGET_LIBRARY_ONLY)" ]; then \
-			shared="$(DEP_ROOT)/libtls.c/bin/$(TARGET)/$(TLS_SHARED_NAME)"; \
-			copied="$(DEP_LIB_DIR)/$(TLS_SHARED_NAME)"; \
-			test -f "$$shared" || { echo "kaiman: missing dependency for $(TARGET): $$shared" >&2; rm -f "$$log"; exit 1; }; \
-			if ! cmp -s "$$shared" "$$copied"; then \
-				cp "$$shared" "$$copied" || { rm -f "$$log"; exit 1; }; \
-			fi; \
-			mkdir -p "$(BIN_DIR)/$(TARGET)" || { rm -f "$$log"; exit 1; }; \
-			cp "$$shared" "$(BIN_DIR)/$(TARGET)/$(TLS_SHARED_NAME)" || { rm -f "$$log"; exit 1; }; \
-			if [ -n "$(TLS_IMPORT_NAME)" ]; then \
-				import="$(DEP_ROOT)/libtls.c/bin/$(TARGET)/$(TLS_IMPORT_NAME)"; \
-				import_copy="$(DEP_LIB_DIR)/$(TLS_IMPORT_NAME)"; \
-				test -f "$$import" || { echo "kaiman: missing dependency for $(TARGET): $$import" >&2; rm -f "$$log"; exit 1; }; \
-				if ! cmp -s "$$import" "$$import_copy"; then \
-					cp "$$import" "$$import_copy" || { rm -f "$$log"; exit 1; }; \
-				fi; \
+		shared="$(DEP_ROOT)/lib$$name.c/bin/$(TARGET)/lib$$name.$(DEP_SHARED_EXT)"; \
+		copied="$(DEP_LIB_DIR)/lib$$name.$(DEP_SHARED_EXT)"; \
+		test -f "$$shared" || { echo "kaiman: missing dependency for $(TARGET): $$shared" >&2; rm -f "$$log"; exit 1; }; \
+		if ! cmp -s "$$shared" "$$copied"; then \
+			cp "$$shared" "$$copied" || { rm -f "$$log"; exit 1; }; \
+		fi; \
+		mkdir -p "$(BIN_DIR)/$(TARGET)" || { rm -f "$$log"; exit 1; }; \
+		cp "$$shared" "$(BIN_DIR)/$(TARGET)/lib$$name.$(DEP_SHARED_EXT)" || { rm -f "$$log"; exit 1; }; \
+		if [ -n "$(DEP_IMPORT_EXT)" ]; then \
+			import="$(DEP_ROOT)/lib$$name.c/bin/$(TARGET)/lib$$name$(DEP_IMPORT_EXT)"; \
+			import_copy="$(DEP_LIB_DIR)/lib$$name$(DEP_IMPORT_EXT)"; \
+			test -f "$$import" || { echo "kaiman: missing dependency for $(TARGET): $$import" >&2; rm -f "$$log"; exit 1; }; \
+			if ! cmp -s "$$import" "$$import_copy"; then \
+				cp "$$import" "$$import_copy" || { rm -f "$$log"; exit 1; }; \
 			fi; \
 		fi; \
 	done; \
@@ -201,11 +200,9 @@ deps: submodules
 
 OUT_DIR = $(BIN_DIR)/$(TARGET)
 OUT_SHARED = $(OUT_DIR)/libkaiman.$(TARGET_EXT)
-OUT_STATIC = $(OUT_DIR)/libkaiman.a
 OUT_CLI = $(OUT_DIR)/kaiman$(TARGET_CLI_EXT)
 OUT_OBJECT = $(BUILD_DIR)/$(TARGET)/libkaiman.o
 BUILD_TARGET_DIR = $(BUILD_DIR)/$(TARGET)$(if $(TARGET_AR),-$(notdir $(TARGET_AR)),)
-TARGET_PRODUCT = $(if $(filter ios/% iossim/%,$(TARGET)),$(OUT_STATIC),$(OUT_CLI))
 
 check-deps: deps
 	@command -v "$(TARGET_CC)" >/dev/null 2>&1 || { echo "kaiman: missing target compiler $(TARGET_CC)" >&2; exit 1; }
@@ -229,7 +226,6 @@ build-target: check-deps
 		*) echo "Unsupported target: $(TARGET)" >&2; exit 1 ;; \
 	esac; \
 	extra=""; \
-	library_only=""; \
 	gui_args=""; \
 	if [ -n "$(TARGET_GUI)" ]; then gui_args="-DKC_GUI=1"; fi; \
 	case "$(TARGET)" in \
@@ -240,8 +236,7 @@ build-target: check-deps
 			esac; \
 			extra="-DCMAKE_TOOLCHAIN_FILE=$(ANDROID_HOME)/ndk/$(NDK_VERSION)/build/cmake/android.toolchain.cmake -DANDROID_ABI=$$abi -DANDROID_PLATFORM=android-21" ;; \
 		ios/*|iossim/*) \
-			extra="-DCMAKE_OSX_SYSROOT=$(TARGET_SDK) -DCMAKE_OSX_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET)"; \
-			library_only="-DKC_LIBRARY_ONLY=1" ;; \
+			extra="-DCMAKE_OSX_SYSROOT=$(TARGET_SDK) -DCMAKE_OSX_DEPLOYMENT_TARGET=$(IOS_DEPLOYMENT_TARGET)" ;; \
 	esac; \
 	case "$(TARGET)" in \
 		macos/*|ios/*|iossim/*) \
@@ -264,7 +259,7 @@ build-target: check-deps
 			$$compiler_args $$ar_args \
 			-DCMAKE_C_FLAGS="$(TARGET_CFLAGS)" \
 			-DKC_TARGET="$(TARGET)" \
-			$$library_only $$gui_args \
+			$$gui_args \
 			-DKC_SHARED_FLAGS="$(TARGET_SHARED)" \
 			-DKC_SYSTEM_LIBS="$(TARGET_SYSTEM_LIBS)" \
 			$$extra > /dev/null 2> "$$configure_errors"; \
@@ -290,7 +285,8 @@ NATIVE_SHARED := $(BIN_DIR)/$(NATIVE_TARGET)/libkaiman.$(NATIVE_EXT)
 $(BUILD_DIR)/test/kaiman-test: src/test.c src/libkaiman.h $(NATIVE_SHARED)
 	@mkdir -p "$(BUILD_DIR)/test"
 	@$(CC) -std=c11 -O2 -Wall -Wextra -Werror -Isrc $(DEP_INCLUDES) \
-		-o "$@" src/test.c -L"$(BIN_DIR)/$(NATIVE_TARGET)" -lkaiman
+		-o "$@" src/test.c -L"$(BIN_DIR)/$(NATIVE_TARGET)" \
+		-lkaiman -lhttp -lnetl -ltls
 
 test:
 	@if [ -n "$(filter wine,$(MAKECMDGOALS))" ]; then \
@@ -300,7 +296,8 @@ test:
 		if ! command -v "$(WINE_X86_64_CC)" >/dev/null 2>&1; then \
 			echo "Missing Windows cross-compiler" >&2; exit 1; \
 		fi; \
-		for file in libkaiman.dll kaiman.exe; do \
+		for file in libkaiman.dll kaiman.exe libhttp.dll libnetl.dll \
+			libtls.dll libwvw.dll libtray.dll WebView2Loader.dll; do \
 			if [ ! -f "$(CURDIR)/$(BIN_DIR)/windows/x86_64/$$file" ]; then \
 				echo "Missing Windows artifact: $$file; run make windows/x86_64 first" >&2; \
 				exit 1; \
@@ -309,9 +306,16 @@ test:
 		mkdir -p "$(BUILD_DIR)/test-wine" || exit 1; \
 		"$(WINE_X86_64_CC)" -std=c11 -O2 -Wall -Wextra -Werror -Isrc \
 			$(DEP_INCLUDES) -o "$(BUILD_DIR)/test-wine/kaiman-test.exe" src/test.c \
-			-L"$(BIN_DIR)/windows/x86_64" -lkaiman -lws2_32 || exit 1; \
+			-L"$(BIN_DIR)/windows/x86_64" \
+			-L"$(BUILD_DIR)/deps/windows/x86_64" \
+			-lkaiman -lhttp -lnetl -ltls -lws2_32 || exit 1; \
 		cp "$(BIN_DIR)/windows/x86_64/libkaiman.dll" \
+			"$(BIN_DIR)/windows/x86_64/libhttp.dll" \
+			"$(BIN_DIR)/windows/x86_64/libnetl.dll" \
 			"$(BIN_DIR)/windows/x86_64/libtls.dll" \
+			"$(BIN_DIR)/windows/x86_64/libwvw.dll" \
+			"$(BIN_DIR)/windows/x86_64/libtray.dll" \
+			"$(BIN_DIR)/windows/x86_64/WebView2Loader.dll" \
 			"$(BIN_DIR)/windows/x86_64/kaiman.exe" \
 			"$(BUILD_DIR)/test-wine/" || exit 1; \
 		for dll in \
