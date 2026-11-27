@@ -342,30 +342,26 @@ static void test_mock_receive(kc_netl_peer_t *peer, const void *data,
         content_type = "application/json";
     } else if (strstr(request, "GET /opencode/api/session/ses_demo/message") !=
         NULL) {
-        if (turns == 0U) {
-            payload = "{\"data\":[{\"id\":\"msg_old\",\"type\":\"assistant\","
-                "\"content\":[{\"type\":\"text\",\"text\":\"old reply\"}]},"
+        if (strstr(request, "cursor=older%2Fpage") != NULL) {
+            payload = "{\"data\":[{\"id\":\"msg_new\",\"type\":\"assistant\","
+                "\"content\":[{\"type\":\"text\",\"text\":\"first reply\"}]},"
                 "{\"id\":\"idle_old\",\"type\":\"idle\","
-                "\"outcome\":\"succeeded\"}]}";
+                "\"outcome\":\"succeeded\"}],\"cursor\":{\"next\":null}}";
+        } else if (turns == 0U) {
+            payload = "{\"data\":[{\"id\":\"idle_old\",\"type\":\"idle\","
+                "\"outcome\":\"succeeded\"},{\"id\":\"msg_old\","
+                "\"type\":\"assistant\",\"content\":[{\"type\":\"text\","
+                "\"text\":\"old reply\"}]}]}";
         } else if (turns == 1U) {
-            payload = "{\"data\":[{\"id\":\"msg_old\",\"type\":\"assistant\","
-                "\"content\":[{\"type\":\"text\",\"text\":\"old reply\"}]},"
-                "{\"id\":\"idle_old\",\"type\":\"idle\",\"outcome\":\"succeeded\"},"
-                "{\"id\":\"msg_new\",\"type\":\"assistant\","
-                "\"content\":[{\"type\":\"text\",\"text\":\"first reply\"}]},"
-                "{\"id\":\"idle_new\",\"type\":\"idle\","
-                "\"outcome\":\"succeeded\"}]}";
+            payload = "{\"data\":[{\"id\":\"idle_new\",\"type\":\"idle\","
+                "\"outcome\":\"succeeded\"}],"
+                "\"cursor\":{\"next\":\"older/page\"}}";
         } else {
-            payload = "{\"data\":[{\"id\":\"msg_old\",\"type\":\"assistant\","
-                "\"content\":[{\"type\":\"text\",\"text\":\"old reply\"}]},"
-                "{\"id\":\"idle_old\",\"type\":\"idle\",\"outcome\":\"succeeded\"},"
-                "{\"id\":\"msg_new\",\"type\":\"assistant\","
-                "\"content\":[{\"type\":\"text\",\"text\":\"first reply\"}]},"
-                "{\"id\":\"idle_new\",\"type\":\"idle\",\"outcome\":\"succeeded\"},"
-                "{\"id\":\"msg_next\",\"type\":\"assistant\","
-                "\"content\":[{\"type\":\"text\",\"text\":\"second reply\"}]},"
-                "{\"id\":\"idle_next\",\"type\":\"idle\","
-                "\"outcome\":\"succeeded\"}]}";
+            payload = "{\"data\":[{\"id\":\"idle_next\",\"type\":\"idle\","
+                "\"outcome\":\"succeeded\"},{\"id\":\"msg_next\","
+                "\"type\":\"assistant\",\"content\":[{\"type\":\"text\","
+                "\"text\":\"second reply\"}]},{\"id\":\"idle_new\","
+                "\"type\":\"idle\",\"outcome\":\"succeeded\"}]}";
         }
         content_type = "application/json";
     } else if (strstr(request, "POST /opencode/api/session ") != NULL) {

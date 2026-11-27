@@ -106,7 +106,9 @@ curl -X POST http://127.0.0.1:49380/v1/chat/completions \
 
 The provider prefix of the model must match the session's provider. Send
 only new messages for stateful OpenCode or Codex requests; the provider
-already has the preceding conversation. Explicit sessions are not replaced
+already has the preceding conversation. OpenCode reads new events using a
+pre-prompt anchor and paginates only as far back as that event. Explicit
+sessions are not replaced
 or deleted by Kaiman. An active selected session reported by the upstream
 server is rejected with HTTP 409, without interrupting its agent.
 

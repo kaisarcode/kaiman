@@ -2430,89 +2430,205 @@ static int opencode_message_text(const kc_json_value_t *value,
 }
 
 /**
- * Check whether one message identifier is already known.
- * @param known Delimited known identifiers.
- * @param id Identifier to test.
- * @return 1 when known, 0 otherwise.
+ * Append a percent-encoded pagination cursor.
+ * @param buffer Destination URL.
+ * @param cursor Provider cursor.
+ * @return KC_KAIMAN_OK or an error status.
  */
-static int opencode_known(const char *known, const char *id) {
-    char marker[512];
-    size_t length;
+static int catalog_cursor(kc_buffer_t *buffer, const char *cursor) {
+    const unsigned char *byte = (const unsigned char *)cursor;
+    int status = KC_KAIMAN_OK;
 
-    if (known == NULL || id == NULL) return 0;
-    length = strlen(id);
-    if (length + 2U >= sizeof(marker)) return 0;
-    (void)snprintf(marker, sizeof(marker), "|%s|", id);
-    return strstr(known, marker) != NULL;
+    for (; *byte != '\0' && status == KC_KAIMAN_OK; byte++) {
+        if ((*byte >= 'a' && *byte <= 'z') ||
+            (*byte >= 'A' && *byte <= 'Z') ||
+            (*byte >= '0' && *byte <= '9') ||
+            *byte == '-' || *byte == '_' || *byte == '.' || *byte == '~') {
+            status = kc_buffer_append(buffer, byte, 1U);
+        } else {
+            status = kc_buffer_format(buffer, "%%%02X", (unsigned int)*byte);
+        }
+    }
+    return status;
 }
 
 /**
- * Collect fresh assistant text and completion state from OpenCode messages.
- * @param body Borrowed response body.
- * @param known Delimited identifiers from the initial snapshot.
- * @param snapshot Whether to record existing message identifiers.
- * @param text Receives fresh reply text.
- * @param done Receives completion state.
- * @param error Receives an owned error message.
+ * Fetch a page of session messages in reverse chronological order.
+ * @param service Managed OpenCode service.
+ * @param session Native session identifier.
+ * @param cursor Optional pagination cursor.
+ * @param out Receives an owned response object.
  * @return KC_KAIMAN_OK or an error status.
  */
-static int opencode_collect(const char *body, kc_buffer_t *known,
-    int snapshot, kc_buffer_t *text, int *done, char **error) {
-    kc_json_value_t *root = NULL;
-    kc_json_value_t *items;
-    size_t index;
+static int opencode_message_page(const kc_kaiman_service_t *service,
+    const char *session, const char *cursor, kc_json_value_t **out) {
+    kc_buffer_t *path = NULL;
+    kc_upstream_response_t response;
     int status;
 
-    if (body == NULL || known == NULL || text == NULL || done == NULL ||
-        error == NULL) {
-        return KC_KAIMAN_EINVAL;
+    *out = NULL;
+    memset(&response, 0, sizeof(response));
+    status = kc_buffer_open(&path);
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_format(path, "/api/session/%s/message", session);
     }
-    status = kc_json_parse(body, strlen(body), &root);
-    if (status != KC_KAIMAN_OK) return status;
-    items = kc_json_member(root, "data");
-    if (kc_json_type(items) != KC_JSON_ARRAY) {
-        kc_json_free(root);
-        return KC_KAIMAN_EHTTP;
+    if (status == KC_KAIMAN_OK && cursor == NULL) {
+        status = kc_buffer_text(path, "?order=desc&limit=100");
+    } else if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(path, "?cursor=");
+        if (status == KC_KAIMAN_OK) status = catalog_cursor(path, cursor);
     }
-    if (!snapshot) {
-        text->size = 0U;
-        if (text->data != NULL) text->data[0] = '\0';
-        *done = 0;
+    if (status == KC_KAIMAN_OK) {
+        status = opencode_request(service, "GET", kc_buffer_value(path),
+            NULL, &response);
     }
-    for (index = 0U; status == KC_KAIMAN_OK &&
-        index < kc_json_length(items); index++) {
-        kc_json_value_t *item = kc_json_item(items, index);
-        const char *id = kc_json_text(kc_json_member(item, "id"));
-        const char *kind = kc_json_text(kc_json_member(item, "type"));
-        if (kind == NULL) kind = kc_json_text(kc_json_member(item, "role"));
+    if (status == KC_KAIMAN_OK && response.status != 200) {
+        status = KC_KAIMAN_EHTTP;
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_json_parse(response.body, response.body_size, out);
+    }
+    kc_upstream_response_free(&response);
+    kc_buffer_close(path);
+    return status;
+}
 
-        if (id == NULL || opencode_known(kc_buffer_value(known), id)) continue;
-        if (snapshot) {
-            status = kc_buffer_text(known, "|");
-            if (status == KC_KAIMAN_OK) {
-                status = kc_buffer_text(known, id);
-            }
-            if (status == KC_KAIMAN_OK) {
-                status = kc_buffer_text(known, "|");
-            }
-        } else if (kind != NULL && strcmp(kind, "assistant") == 0) {
-            status = opencode_message_text(item, text);
-        } else if (kind != NULL && strcmp(kind, "idle") == 0) {
-            const char *outcome = kc_json_text(kc_json_member(item,
-                "outcome"));
-            if (outcome != NULL && strcmp(outcome, "succeeded") == 0) {
-                *done = 1;
-            } else {
-                kc_json_value_t *failure = kc_json_member(item, "error");
-                const char *message = kc_json_text(kc_json_member(failure,
-                    "message"));
-                if (message != NULL) *error = kc_util_strdup(message);
-                else *error = kc_util_strdup("opencode did not complete");
-                status = KC_KAIMAN_EHTTP;
-            }
-        }
+/**
+ * Record the newest existing event before submitting a prompt.
+ * @param service Managed OpenCode service.
+ * @param session Native session identifier.
+ * @param anchor Destination for the newest message identifier.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int opencode_snapshot(const kc_kaiman_service_t *service,
+    const char *session, kc_buffer_t *anchor) {
+    kc_json_value_t *root = NULL;
+    const kc_json_value_t *items;
+    const char *id;
+    int status;
+
+    status = opencode_message_page(service, session, NULL, &root);
+    items = kc_json_member(root, "data");
+    if (status == KC_KAIMAN_OK && kc_json_type(items) != KC_JSON_ARRAY) {
+        status = KC_KAIMAN_EFORMAT;
+    }
+    if (status == KC_KAIMAN_OK && kc_json_length(items) != 0U) {
+        id = kc_json_text(kc_json_member(kc_json_item(items, 0U), "id"));
+        status = id != NULL && *id != '\0' ?
+            kc_buffer_text(anchor, id) : KC_KAIMAN_EFORMAT;
     }
     kc_json_free(root);
+    return status;
+}
+
+/**
+ * Read only events newer than the saved session anchor.
+ * @param service Managed OpenCode service.
+ * @param session Native session identifier.
+ * @param anchor Identifier of the last preexisting event, or empty.
+ * @param text Destination for chronological assistant text.
+ * @param done Receives whether the turn completed.
+ * @param error Receives an owned upstream error message.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int opencode_collect(const kc_kaiman_service_t *service,
+    const char *session, const char *anchor, kc_buffer_t *text, int *done,
+    char **error) {
+    kc_buffer_t *part = NULL;
+    char *cursor = NULL;
+    unsigned int page;
+    int found = 0;
+    int status;
+
+    *done = 0;
+    text->size = 0U;
+    if (text->data != NULL) text->data[0] = '\0';
+    status = kc_buffer_open(&part);
+    for (page = 0U; status == KC_KAIMAN_OK && page < 100U; page++) {
+        kc_json_value_t *root = NULL;
+        const kc_json_value_t *items;
+        const char *next;
+        char *following = NULL;
+        size_t index;
+        size_t boundary;
+
+        status = opencode_message_page(service, session, cursor, &root);
+        items = kc_json_member(root, "data");
+        if (status == KC_KAIMAN_OK && kc_json_type(items) != KC_JSON_ARRAY) {
+            status = KC_KAIMAN_EFORMAT;
+        }
+        boundary = kc_json_length(items);
+        for (index = 0U; status == KC_KAIMAN_OK && index < boundary; index++) {
+            const kc_json_value_t *item = kc_json_item(items, index);
+            const char *id = kc_json_text(kc_json_member(item, "id"));
+            const char *kind = kc_json_text(kc_json_member(item, "type"));
+
+            if (id == NULL) {
+                status = KC_KAIMAN_EFORMAT;
+                break;
+            }
+            if (*anchor != '\0' && strcmp(id, anchor) == 0) {
+                boundary = index;
+                found = 1;
+                break;
+            }
+            if (!*done && kind != NULL && strcmp(kind, "idle") == 0) {
+                const char *outcome = kc_json_text(kc_json_member(item,
+                    "outcome"));
+
+                if (outcome != NULL && strcmp(outcome, "succeeded") == 0) {
+                    *done = 1;
+                } else {
+                    const char *message = kc_json_text(kc_json_member(
+                        kc_json_member(item, "error"), "message"));
+
+                    *error = kc_util_strdup(message != NULL ? message :
+                        "opencode did not complete");
+                    status = KC_KAIMAN_EHTTP;
+                }
+            }
+        }
+        part->size = 0U;
+        if (part->data != NULL) part->data[0] = '\0';
+        for (index = boundary; status == KC_KAIMAN_OK && index > 0U; index--) {
+            const kc_json_value_t *item = kc_json_item(items, index - 1U);
+            const char *kind = kc_json_text(kc_json_member(item, "type"));
+
+            if (kind == NULL) kind = kc_json_text(kc_json_member(item, "role"));
+            if (kind != NULL && strcmp(kind, "assistant") == 0) {
+                status = opencode_message_text(item, part);
+            }
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = kc_buffer_text(part, kc_buffer_value(text));
+        }
+        if (status == KC_KAIMAN_OK) {
+            text->size = 0U;
+            if (text->data != NULL) text->data[0] = '\0';
+            status = kc_buffer_text(text, kc_buffer_value(part));
+        }
+        next = kc_json_text(kc_json_member(kc_json_member(root, "cursor"),
+            "next"));
+        if (status == KC_KAIMAN_OK && !found && next != NULL &&
+            *next != '\0') {
+            if (cursor != NULL && strcmp(cursor, next) == 0) {
+                status = KC_KAIMAN_EFORMAT;
+            } else {
+                following = kc_util_strdup(next);
+                if (following == NULL) status = KC_KAIMAN_ENOMEM;
+            }
+        }
+        kc_json_free(root);
+        free(cursor);
+        cursor = following;
+        if (status != KC_KAIMAN_OK || cursor == NULL) break;
+    }
+    if (status == KC_KAIMAN_OK &&
+        (page == 100U || (*anchor != '\0' && !found))) {
+        status = KC_KAIMAN_EFORMAT;
+    }
+    free(cursor);
+    kc_buffer_close(part);
     return status;
 }
 
@@ -3443,14 +3559,11 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     kc_kaiman_message_t messages[KAIMAN_MAX_HISTORY];
     kc_kaiman_stream_t stream;
     kc_buffer_t *prompt = NULL;
-    kc_buffer_t *known = NULL;
+    kc_buffer_t *anchor = NULL;
     kc_buffer_t *reply = NULL;
-    kc_buffer_t *before_text = NULL;
     char *state_path = NULL;
     char *session = NULL;
     char *state_id = NULL;
-    char *provider = NULL;
-    char *identifier = NULL;
     char *path = NULL;
     char *body = NULL;
     char *text = NULL;
@@ -3504,42 +3617,16 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
         if (status == KC_KAIMAN_OK) status = kc_buffer_text(prompt, text);
     }
     if (status == KC_KAIMAN_OK) {
-        status = kc_buffer_open(&known);
+        status = kc_buffer_open(&anchor);
     }
     if (status == KC_KAIMAN_OK) {
         status = kc_buffer_open(&reply);
     }
     if (status == KC_KAIMAN_OK) {
-        status = kc_buffer_open(&before_text);
+        status = opencode_snapshot(service, session, anchor);
     }
-    if (status == KC_KAIMAN_OK) {
-        path = (char *)malloc(strlen(session) + 24U);
-        if (path == NULL) status = KC_KAIMAN_ENOMEM;
-        else {
-            (void)snprintf(path, strlen(session) + 24U,
-                "/api/session/%s/message", session);
-            rc = opencode_request(service, "GET", path, NULL, &response);
-            if (rc == KC_KAIMAN_OK && response.status >= 400) {
-                rc = KC_KAIMAN_EHTTP;
-            }
-            if (rc == KC_KAIMAN_OK) {
-                status = opencode_collect(response.body, known, 1,
-                    before_text, &done, &failure);
-            } else {
-                status = rc;
-            }
-            kc_upstream_response_free(&response);
-        }
-    }
-    free(path);
-    path = NULL;
-    kc_buffer_close(before_text);
-    before_text = NULL;
     if (status == KC_KAIMAN_OK) {
         status = kc_buffer_open(&stream.sse);
-    }
-    if (status == KC_KAIMAN_OK) {
-        status = opencode_split_model(model, &provider, &identifier);
     }
     if (status == KC_KAIMAN_OK) {
         kc_buffer_t *buffer = NULL;
@@ -3550,22 +3637,7 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
         if (status == KC_KAIMAN_OK) {
             status = json_write_text(buffer, kc_buffer_value(prompt));
         }
-        if (status == KC_KAIMAN_OK) {
-            status = kc_buffer_text(buffer,
-                ",\"model\":{\"providerID\":");
-        }
-        if (status == KC_KAIMAN_OK) {
-            status = json_write_text(buffer, provider);
-        }
-        if (status == KC_KAIMAN_OK) {
-            status = kc_buffer_text(buffer, ",\"id\":");
-        }
-        if (status == KC_KAIMAN_OK) {
-            status = json_write_text(buffer, identifier);
-        }
-        if (status == KC_KAIMAN_OK) {
-            status = kc_buffer_text(buffer, "}}");
-        }
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}");
         if (status == KC_KAIMAN_OK) body = kc_util_strdup(
             kc_buffer_value(buffer));
         if (body == NULL) status = KC_KAIMAN_ENOMEM;
@@ -3579,7 +3651,8 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
                 "/api/session/%s/prompt", session);
             rc = opencode_request(service, "POST", path, body, &response);
             if (rc == KC_KAIMAN_OK && response.status >= 400) {
-                status = KC_KAIMAN_EHTTP;
+                status = response.status == 409 ? KC_KAIMAN_EBUSY :
+                    KC_KAIMAN_EHTTP;
                 failure = kc_util_strdup(response.body);
             } else if (rc != KC_KAIMAN_OK) {
                 status = rc;
@@ -3592,36 +3665,17 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     if (status == KC_KAIMAN_OK) {
         double deadline = kc_util_seconds() +
             (double)kc_kaiman_service_timeout(service) * 2.0;
-        path = (char *)malloc(strlen(session) + 24U);
-        if (path == NULL) status = KC_KAIMAN_ENOMEM;
-        else {
-            (void)snprintf(path, strlen(session) + 24U,
-                "/api/session/%s/message", session);
-            while (!done && kc_util_seconds() < deadline) {
-                rc = opencode_request(service, "GET", path, NULL, &response);
-                if (rc != KC_KAIMAN_OK) {
-                    status = rc;
-                    break;
-                }
-                if (response.status >= 400) {
-                    status = KC_KAIMAN_EHTTP;
-                    failure = kc_util_strdup(response.body);
-                    kc_upstream_response_free(&response);
-                    break;
-                }
-                status = opencode_collect(response.body, known, 0, reply,
-                    &done, &failure);
-                kc_upstream_response_free(&response);
-                if (status != KC_KAIMAN_OK || done) break;
-                kc_util_sleep(200);
-            }
-            if (status == KC_KAIMAN_OK && !done) {
-                status = KC_KAIMAN_ETIMEOUT;
-            }
+
+        while (!done && kc_util_seconds() < deadline) {
+            status = opencode_collect(service, session,
+                kc_buffer_value(anchor), reply, &done, &failure);
+            if (status != KC_KAIMAN_OK || done) break;
+            kc_util_sleep(200);
+        }
+        if (status == KC_KAIMAN_OK && !done) {
+            status = KC_KAIMAN_ETIMEOUT;
         }
     }
-    free(path);
-    path = NULL;
     if (state_path == NULL) goto respond;
     if (status == KC_KAIMAN_OK) {
         status = opencode_state_load(state_path, &state_id, messages, &count);
@@ -3698,17 +3752,14 @@ respond:
     kc_kaiman_free(text);
     kc_kaiman_free(failure);
     kc_buffer_close(stream.sse);
-    kc_buffer_close(before_text);
     kc_buffer_close(reply);
-    kc_buffer_close(known);
+    kc_buffer_close(anchor);
     kc_buffer_close(prompt);
     for (index = 0U; index < KAIMAN_MAX_HISTORY; index++) {
         free(messages[index].role);
         free(messages[index].content);
     }
     free(body);
-    free(provider);
-    free(identifier);
     free(session);
     free(state_id);
     free(state_path);
@@ -4343,29 +4394,6 @@ static char *catalog_bedrock_base(const char *base) {
     if (status == KC_KAIMAN_OK) result = kc_util_strdup(kc_buffer_value(buffer));
     kc_buffer_close(buffer);
     return result;
-}
-
-/**
- * Append a percent-encoded pagination cursor.
- * @param buffer Destination URL.
- * @param cursor Provider cursor.
- * @return KC_KAIMAN_OK or an error status.
- */
-static int catalog_cursor(kc_buffer_t *buffer, const char *cursor) {
-    const unsigned char *byte = (const unsigned char *)cursor;
-    int status = KC_KAIMAN_OK;
-
-    for (; *byte != '\0' && status == KC_KAIMAN_OK; byte++) {
-        if ((*byte >= 'a' && *byte <= 'z') ||
-            (*byte >= 'A' && *byte <= 'Z') ||
-            (*byte >= '0' && *byte <= '9') ||
-            *byte == '-' || *byte == '_' || *byte == '.' || *byte == '~') {
-            status = kc_buffer_append(buffer, byte, 1U);
-        } else {
-            status = kc_buffer_format(buffer, "%%%02X", (unsigned int)*byte);
-        }
-    }
-    return status;
 }
 
 /**
