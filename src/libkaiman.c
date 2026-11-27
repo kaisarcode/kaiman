@@ -9,11 +9,13 @@
 
 #include "libkaiman.h"
 
+/* Windows defines interface as struct; load libnetl.h before windows.h. */
+#include "libnetl.h"
+
 #include "child.h"
 #include "json.h"
 #include "keyring.h"
 #include "libhttp.h"
-#include "libnetl.h"
 #include "upstream.h"
 #include "util.h"
 
@@ -52,6 +54,7 @@ struct kc_kaiman_service {
     kc_kaiman_service_t *next;
     int alive;
     char *name;
+    char *display_name;
     char *adapter;
     char *base_url;
     char *api_key_env;
@@ -347,6 +350,7 @@ static char *read_line(FILE *file) {
  */
 static void service_fields_clear(kc_kaiman_service_t *service) {
     free(service->name);
+    free(service->display_name);
     free(service->adapter);
     free(service->base_url);
     free(service->api_key_env);
@@ -355,6 +359,7 @@ static void service_fields_clear(kc_kaiman_service_t *service) {
     free(service->auth_user);
     free(service->keyring);
     service->name = NULL;
+    service->display_name = NULL;
     service->adapter = NULL;
     service->base_url = NULL;
     service->api_key_env = NULL;
@@ -474,6 +479,8 @@ static int persist(kc_kaiman_t *kaiman) {
     for (index = 0U; index < kaiman->count; index++) {
         const kc_kaiman_service_t *service = kaiman->services[index];
         fprintf(file, "[service.%s]\n", service->name);
+        fprintf(file, "display-name=%s\n",
+            service->display_name != NULL ? service->display_name : "");
         fprintf(file, "adapter=%s\n",
             service->adapter != NULL ? service->adapter : "");
         fprintf(file, "url=%s\n",
@@ -551,6 +558,9 @@ static int apply_field(kc_kaiman_service_t *service, const char *key,
             return KC_KAIMAN_EINVAL;
         }
         target = &service->name;
+    } else if (strcmp(key, "display-name") == 0 ||
+        strcmp(key, "display_name") == 0) {
+        target = &service->display_name;
     } else if (strcmp(key, "adapter") == 0) {
         if (kc_kaiman_default_url(value) == NULL &&
             strcmp(value, "opencode-local") != 0 &&
@@ -865,11 +875,20 @@ int kc_kaiman_add_service(kc_kaiman_t *kaiman,
         set_error(kaiman, "invalid service descriptor");
         return KC_KAIMAN_EINVAL;
     }
-    service = service_new(kaiman, descriptor->name);
-    if (service == NULL) {
-        set_error(kaiman, "invalid or duplicate service: %s",
+    if (!valid_name(descriptor->name)) {
+        set_error(kaiman, "invalid service name: %s (use letters, digits, "
+            "underscores, hyphens or dots)",
             descriptor->name != NULL ? descriptor->name : "");
         return KC_KAIMAN_EINVAL;
+    }
+    if (find_service(kaiman, descriptor->name) != NULL) {
+        set_error(kaiman, "service already exists: %s", descriptor->name);
+        return KC_KAIMAN_EINVAL;
+    }
+    service = service_new(kaiman, descriptor->name);
+    if (service == NULL) {
+        set_error(kaiman, "out of memory");
+        return KC_KAIMAN_ENOMEM;
     }
     values[0] = descriptor->adapter;
     values[1] = descriptor->base_url;
@@ -1133,6 +1152,8 @@ const char *kc_kaiman_service_get(const kc_kaiman_service_t *service,
     const char *key) {
     if (!service_valid(service) || key == NULL) return NULL;
     if (strcmp(key, "name") == 0) return service->name;
+    if (strcmp(key, "display-name") == 0 ||
+        strcmp(key, "display_name") == 0) return service->display_name;
     if (strcmp(key, "adapter") == 0) return service->adapter;
     if (strcmp(key, "url") == 0 || strcmp(key, "base_url") == 0) {
         return service->base_url != NULL ? service->base_url : "";
@@ -2600,12 +2621,16 @@ static int opencode_collect(const kc_kaiman_service_t *service,
             }
         }
         if (status == KC_KAIMAN_OK) {
-            status = kc_buffer_text(part, kc_buffer_value(text));
+            const char *previous = kc_buffer_value(text);
+
+            if (previous != NULL) status = kc_buffer_text(part, previous);
         }
         if (status == KC_KAIMAN_OK) {
+            const char *combined = kc_buffer_value(part);
+
             text->size = 0U;
             if (text->data != NULL) text->data[0] = '\0';
-            status = kc_buffer_text(text, kc_buffer_value(part));
+            if (combined != NULL) status = kc_buffer_text(text, combined);
         }
         next = kc_json_text(kc_json_member(kc_json_member(root, "cursor"),
             "next"));

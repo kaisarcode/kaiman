@@ -15,17 +15,24 @@ preserves its existing credential when the authentication scheme is unchanged.
 listen=127.0.0.1:49380
 
 [service.local-opencode]
+display-name=Local OpenCode
 adapter=opencode-local
 url=
 scheme=none
 timeout=60
 
 [service.local-codex]
+display-name=Local Codex
 adapter=codex-local
 url=
 scheme=none
 timeout=60
 ```
+
+The `[service.<slug>]` section name is the stable identifier used by the CLI
+and API. `display-name` is the human readable name shown by the GUI. The GUI
+generates the slug from that name unless the slug field is edited explicitly,
+and adds a numeric suffix when the slug is already in use.
 
 Persisted OpenCode session state and the detached gateway PID live under
 `$XDG_STATE_HOME/kaiman`, or `$HOME/.local/state/kaiman`.

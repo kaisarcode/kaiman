@@ -39,8 +39,8 @@ static void usage(void) {
     printf("\nOptions:\n");
     printf("  -h, --help                      Show this help\n");
     printf("  -v, --version                   Show version\n\n");
-    printf("Service keys: adapter, url, env, token-command,\n");
-    printf("  scheme, user, timeout\n");
+    printf("Service keys: display-name, adapter, url, env,\n");
+    printf("  token-command, scheme, user, timeout\n");
 }
 
 /**
@@ -62,7 +62,12 @@ static void report_error(const kc_kaiman_t *kaiman, int status) {
  * @return void
  */
 static void print_service(const kc_kaiman_service_t *service) {
+    const char *display = kc_kaiman_service_get(service, "display-name");
+
     printf("%s\n", kc_kaiman_service_get(service, "name"));
+    if (display != NULL && *display != '\0') {
+        printf("  display-name: %s\n", display);
+    }
     printf("  adapter: %s\n", kc_kaiman_service_get(service, "adapter"));
     printf("  url: %s\n", kc_kaiman_service_url(service) != NULL ?
         kc_kaiman_service_url(service) : "");

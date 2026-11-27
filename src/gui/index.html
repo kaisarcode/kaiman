@@ -32,9 +32,15 @@
                 <h2 id="editor-heading">Add service</h2>
             </div>
             <form class="service-form" id="service-form">
-                <div class="field">
-                    <label for="field-name">Name</label>
-                    <input id="field-name" name="name" type="text" autocomplete="off" required>
+                <div class="field-row">
+                    <div class="field">
+                        <label for="field-display-name">Name</label>
+                        <input id="field-display-name" name="display-name" type="text" autocomplete="off" required>
+                    </div>
+                    <div class="field">
+                        <label for="field-slug">Slug</label>
+                        <input id="field-slug" name="slug" type="text" autocomplete="off">
+                    </div>
                 </div>
                 <div class="field-row">
                     <div class="field">

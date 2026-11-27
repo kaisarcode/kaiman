@@ -564,8 +564,18 @@ static int checks(const char *path) {
         fprintf(stderr, "invalid descriptor was accepted\n");
         result = 1;
     }
+    invalid.name = "invalid name";
+    invalid.adapter = "opencode-local";
+    invalid.base_url = NULL;
+    if (kc_kaiman_add_service(kaiman, &invalid, &service) !=
+        KC_KAIMAN_EINVAL ||
+        strstr(kc_kaiman_error(kaiman), "invalid service name") == NULL) {
+        fprintf(stderr, "invalid service name was accepted\n");
+        result = 1;
+    }
     if (kc_kaiman_add_service(kaiman, &descriptor, &service) !=
-        KC_KAIMAN_EINVAL) {
+        KC_KAIMAN_EINVAL ||
+        strstr(kc_kaiman_error(kaiman), "service already exists") == NULL) {
         fprintf(stderr, "duplicate service was accepted\n");
         result = 1;
     }
@@ -607,6 +617,13 @@ static int checks(const char *path) {
         fprintf(stderr, "invalid adapter was accepted\n");
         result = 1;
     }
+    if (kc_kaiman_service_set(service, "display-name",
+        "Local OpenCode") != KC_KAIMAN_OK ||
+        strcmp(kc_kaiman_service_get(service, "display-name"),
+            "Local OpenCode") != 0) {
+        fprintf(stderr, "display name failed\n");
+        result = 1;
+    }
     printf("[3/" KC_TEST_TOTAL "] [PASS] set_and_validate: field mutation and validation\n");
 
     status = kc_kaiman_listen(kaiman, "127.0.0.1:50000");
@@ -624,7 +641,9 @@ static int checks(const char *path) {
         strcmp(kc_kaiman_service_get(found, "url"),
             "http://127.0.0.1:49375") != 0 ||
         strcmp(kc_kaiman_service_get(found, "token-command"),
-            "opencode service get password") != 0) {
+            "opencode service get password") != 0 ||
+        strcmp(kc_kaiman_service_get(found, "display-name"),
+            "Local OpenCode") != 0) {
         fprintf(stderr, "reload failed\n");
         result = 1;
     }

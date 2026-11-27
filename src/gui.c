@@ -121,8 +121,8 @@ static int append_json_string(kc_buffer_t *buffer, const char *text) {
  * @return KC_KAIMAN_OK or an error status.
  */
 static int append_services(kc_buffer_t *buffer, kc_kaiman_t *kaiman) {
-    static const char *const keys[] = {"name", "adapter", "url", "env",
-        "token-command", "scheme", "user", "keyring"};
+    static const char *const keys[] = {"name", "display-name", "adapter",
+        "url", "env", "token-command", "scheme", "user", "keyring"};
     kc_kaiman_service_t **services = NULL;
     size_t count = 0U;
     size_t index;
@@ -191,8 +191,8 @@ static int parse_params(const char *params_json, kc_json_value_t **out) {
  */
 static int apply_service_params(kc_kaiman_service_t *service,
     const kc_json_value_t *params) {
-    static const char *const keys[] = {"adapter", "url", "env",
-        "token-command", "scheme", "user"};
+    static const char *const keys[] = {"display-name", "adapter", "url",
+        "env", "token-command", "scheme", "user"};
     const char *scheme = require_string(params, "scheme");
     const char *user = require_string(params, "user");
     const char *secret = require_string(params, "secret");
@@ -204,7 +204,7 @@ static int apply_service_params(kc_kaiman_service_t *service,
     int result;
 
     for (index = 0U; index < sizeof(keys) / sizeof(keys[0]); index++) {
-        if (direct && index >= 2U) continue;
+        if (direct && index >= 3U) continue;
         value = kc_json_member(params, keys[index]);
         if (value == NULL) continue;
         if (kc_json_type(value) != KC_JSON_STRING) return KC_KAIMAN_EINVAL;

@@ -10,6 +10,7 @@
 var currentState = { services: [] };
 var themePending = false;
 var editedAuthentication = null;
+var slugTouched = false;
 
 /**
  * Find one element by its document identifier.
@@ -70,6 +71,66 @@ function setValue(input, value) {
 }
 
 /**
+ * Convert one display name into a stable slug.
+ * @param text Display name.
+ * @return Generated slug, or "service" when no characters are usable.
+ */
+function slugify(text) {
+    var value = String(text === null || text === undefined ? "" : text)
+        .toLowerCase().trim()
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+    return value === "" ? "service" : value;
+}
+
+/**
+ * Resolve one unused slug against the loaded services.
+ * @param slug Preferred slug.
+ * @return Preferred slug, or the same base with a numeric suffix.
+ */
+function uniqueSlug(slug) {
+    var services = currentState.services || [];
+    var match = /^(.*)-(\d+)$/.exec(slug);
+    var base = match !== null ? match[1] : slug;
+    var number = match !== null ? parseInt(match[2], 10) + 1 : 2;
+    var candidate = base + "-" + number;
+    var used = Object.create(null);
+    var index;
+
+    for (index = 0; index < services.length; index++) {
+        used[services[index].name] = true;
+    }
+    if (!used[slug]) return slug;
+    while (used[candidate]) {
+        number++;
+        candidate = base + "-" + number;
+    }
+    return candidate;
+}
+
+/**
+ * Preview the slug that an empty slug field will use.
+ * @return void
+ */
+function refreshSlugPlaceholder() {
+    var slug = byId("field-slug");
+    var name = byId("field-display-name").value.trim();
+
+    if (slugTouched || slug.readOnly || slug.value !== "") return;
+    slug.placeholder = name === "" ? "" : uniqueSlug(slugify(name));
+}
+
+/**
+ * Track explicit slug edits and refresh the empty-field preview.
+ * @return void
+ */
+function handleSlugInput() {
+    slugTouched = byId("field-slug").value.trim() !== "";
+    refreshSlugPlaceholder();
+}
+
+/**
  * Enable or disable every button.
  * @param busy Whether the interface is busy.
  * @return void
@@ -109,10 +170,12 @@ function renderServices(services) {
     for (index = 0; index < services.length; index++) {
         name = document.createElement("span");
         name.className = "service-name";
-        name.textContent = services[index].name;
+        name.textContent = services[index]["display-name"] ||
+            services[index].name;
         detail = document.createElement("span");
         detail.className = "service-detail";
-        detail.textContent = services[index].adapter || "no provider";
+        detail.textContent = (services[index].name || "") + " · " +
+            (services[index].adapter || "no provider");
         item = document.createElement("button");
         item.type = "button";
         item.className = "service-item";
@@ -209,13 +272,17 @@ function clearForm() {
     var index;
 
     form.reset();
+    slugTouched = false;
+    setValue(byId("field-display-name"), "");
+    setValue(byId("field-slug"), "");
+    byId("field-slug").placeholder = "";
     byId("field-adapter").value = "openai";
     byId("field-scheme").value = "none";
     editedAuthentication = null;
     renderDefaultUrl();
     renderAuthentication();
     byId("field-timeout").value = "60";
-    byId("field-name").readOnly = false;
+    byId("field-slug").readOnly = false;
     byId("editor-heading").textContent = "Add service";
     byId("remove-service").hidden = true;
     for (index = 0; index < items.length; index++) {
@@ -229,13 +296,16 @@ function clearForm() {
  * @return void
  */
 function fillForm(service) {
-    var fields = ["adapter", "url", "scheme", "user"];
+    var fields = ["display-name", "adapter", "url", "scheme", "user"];
     var items = document.querySelectorAll(".service-item");
     var index;
 
-    setValue(byId("field-name"), service.name);
+    setValue(byId("field-slug"), service.name);
     for (index = 0; index < fields.length; index++) {
         setValue(byId("field-" + fields[index]), service[fields[index]]);
+    }
+    if (byId("field-display-name").value === "") {
+        setValue(byId("field-display-name"), service.name);
     }
     if (!byId("field-scheme").value) {
         byId("field-scheme").value = "bearer";
@@ -249,7 +319,9 @@ function fillForm(service) {
     renderDefaultUrl();
     renderAuthentication();
     setValue(byId("field-timeout"), service.timeout);
-    byId("field-name").readOnly = true;
+    slugTouched = true;
+    byId("field-slug").placeholder = "";
+    byId("field-slug").readOnly = true;
     byId("editor-heading").textContent = "Edit " + service.name;
     byId("remove-service").hidden = false;
     for (index = 0; index < items.length; index++) {
@@ -269,10 +341,17 @@ function readForm() {
     var params = {};
     var timeout;
 
-    params.name = byId("field-name").value.trim();
-    if (params.name === "") {
+    params["display-name"] = byId("field-display-name").value.trim();
+    if (params["display-name"] === "") {
         showMessage("A service name is required.", "error");
         return null;
+    }
+    if (byId("field-slug").readOnly) {
+        params.name = byId("field-slug").value.trim();
+    } else if (byId("field-slug").value.trim() === "") {
+        params.name = uniqueSlug(slugify(params["display-name"]));
+    } else {
+        params.name = uniqueSlug(slugify(byId("field-slug").value));
     }
     params.adapter = byId("field-adapter").value;
     params.scheme = localProvider() ? "none" : byId("field-scheme").value;
@@ -365,7 +444,7 @@ function handleServiceSelect(event) {
  */
 function handleNew() {
     clearForm();
-    byId("field-name").focus();
+    byId("field-display-name").focus();
     showMessage("Enter the new service details.", "info");
 }
 
@@ -400,14 +479,15 @@ async function handleSubmit(event) {
  * @return void
  */
 function handleRemove() {
-    var name = byId("field-name").value.trim();
+    var name = byId("field-slug").value.trim();
     var dialog = byId("remove-dialog");
+    var label = byId("field-display-name").value.trim() || name;
 
     if (name === "") {
         showMessage("Select a service to remove.", "error");
         return;
     }
-    byId("remove-message").textContent = "Remove service " + name + "?";
+    byId("remove-message").textContent = "Remove service " + label + "?";
     dialog.returnValue = "";
     dialog.showModal();
 }
@@ -418,7 +498,7 @@ function handleRemove() {
  */
 async function handleRemoveConfirm() {
     var dialog = byId("remove-dialog");
-    var name = byId("field-name").value.trim();
+    var name = byId("field-slug").value.trim();
 
     if (dialog.returnValue !== "remove" || name === "") return;
     if (await perform("removeService", { name: name }, "Service removed.")) {
@@ -530,6 +610,9 @@ function bindEvents() {
     byId("new-service").addEventListener("click", handleNew);
     byId("service-form").addEventListener("submit", handleSubmit);
     byId("field-adapter").addEventListener("change", handleProvider);
+    byId("field-display-name").addEventListener("input",
+        refreshSlugPlaceholder);
+    byId("field-slug").addEventListener("input", handleSlugInput);
     byId("field-scheme").addEventListener("change", renderAuthentication);
     byId("remove-service").addEventListener("click", handleRemove);
     byId("remove-dialog").addEventListener("close", handleRemoveConfirm);

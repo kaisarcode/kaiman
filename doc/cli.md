@@ -18,9 +18,9 @@ kaiman stop
 kaiman gui
 ```
 
-`add` and `edit` accept the service keys `adapter`, `url`, `env`,
-`token-command`, `scheme`, `user` and `timeout`. `start` launches the gateway
-as a detached process, `status` prints its state and address, and `stop`
+`add` and `edit` accept the service keys `display-name`, `adapter`, `url`,
+`env`, `token-command`, `scheme`, `user` and `timeout`. `start` launches the
+gateway as a detached process, `status` prints its state and address, and `stop`
 terminates it. `gui` opens a native WebView manager backed by the same public
 library API. The manager lists services and provides add, edit, remove, start,
 stop, status and listen-address controls. It is available only in builds with
