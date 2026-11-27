@@ -7,6 +7,7 @@
 
 BIN_DIR := bin
 BUILD_DIR := .build
+DIST_DIR := dist
 WINE ?= wine
 WINE_X86_64_CC ?= x86_64-w64-mingw32-gcc
 WINE_X86_64_CXX ?= x86_64-w64-mingw32-g++
@@ -66,7 +67,45 @@ GUI_TARGETS := linux/x86_64 windows/x86_64 macos/x86_64 macos/aarch64
 TARGET_GUI := $(if $(filter $(TARGET),$(GUI_TARGETS)),1,)
 
 .DEFAULT_GOAL := $(NATIVE_TARGET)
-.PHONY: all test wine clean build-target check-deps submodules deps $(SUPPORTED_TARGETS)
+.PHONY: all test wine clean dist build-target check-deps submodules deps $(SUPPORTED_TARGETS)
+
+ifneq ($(filter dist,$(MAKECMDGOALS)),)
+DIST_TARGETS := $(filter $(SUPPORTED_TARGETS),$(MAKECMDGOALS))
+ifneq ($(filter all,$(MAKECMDGOALS)),)
+DIST_TARGETS := $(SUPPORTED_TARGETS)
+endif
+ifeq ($(strip $(DIST_TARGETS)),)
+DIST_TARGETS := $(NATIVE_TARGET)
+endif
+
+ifneq ($(filter-out dist all make $(SUPPORTED_TARGETS),$(MAKECMDGOALS)),)
+$(error Invalid distribution target)
+endif
+
+.PHONY: make
+
+dist:
+	@command -v zip >/dev/null 2>&1 || { echo "Missing zip" >&2; exit 1; }
+	@for target in $(DIST_TARGETS); do \
+		executable=kaiman; \
+		case "$$target" in windows/*) executable=kaiman.exe ;; esac; \
+		test -f "$(BIN_DIR)/$$target/$$executable" || \
+			{ echo "Missing build for $$target; run make $$target first" >&2; exit 1; }; \
+	done
+	@mkdir -p "$(DIST_DIR)"
+	@temp=$$(mktemp -d "$(abspath $(DIST_DIR))/.kaiman-XXXXXX") || exit 1; \
+	trap 'rm -rf "$$temp"' EXIT; \
+	for target in $(DIST_TARGETS); do \
+		name="kaiman-$$(printf '%s' "$$target" | tr / -).zip"; \
+		(cd "$(BIN_DIR)/$$target" && zip -qr "$$temp/$$name" .) || exit 1; \
+		mv -f "$$temp/$$name" "$(DIST_DIR)/$$name" || exit 1; \
+		echo "OK $(DIST_DIR)/$$name"; \
+	done
+
+all make $(SUPPORTED_TARGETS): dist
+	@:
+
+else
 
 all: $(SUPPORTED_TARGETS)
 
@@ -137,6 +176,8 @@ endef
 
 $(eval $(call android_target,aarch64,aarch64-linux-android))
 $(eval $(call android_target,armv7,armv7a-linux-androideabi))
+
+endif
 
 DEP_ROOT := lib/kaisarcode
 DEP_NAMES := http netl tls
