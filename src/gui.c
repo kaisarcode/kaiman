@@ -1134,12 +1134,16 @@ int kc_kaiman_gui_run(void) {
     kc_tray_item_t *quit_item = NULL;
     char *url = NULL;
     char *icon = NULL;
+    char *tray_started = NULL;
+    char *tray_stopped = NULL;
     char *focus_path = NULL;
     FILE *focus;
     const char *detail;
     int width = 1120;
     int height = 760;
     int hide_on_close = 1;
+    int running;
+    double next_status = 0.0;
     int result = 1;
 
     if (gui_claim() == 0) return 0;
@@ -1152,10 +1156,15 @@ int kc_kaiman_gui_run(void) {
     url = gui_index_url();
 #ifdef _WIN32
     icon = gui_asset_path("logo.ico");
+    tray_started = gui_asset_path("tray-started.ico");
+    tray_stopped = gui_asset_path("tray-stopped.ico");
 #else
     icon = gui_asset_path("logo-128.png");
+    tray_started = gui_asset_path("tray-started.png");
+    tray_stopped = gui_asset_path("tray-stopped.png");
 #endif
-    if (url == NULL || icon == NULL) {
+    if (url == NULL || icon == NULL || tray_started == NULL ||
+        tray_stopped == NULL) {
         fprintf(stderr, "kaiman: unable to resolve GUI assets\n");
         goto done;
     }
@@ -1192,7 +1201,8 @@ int kc_kaiman_gui_run(void) {
     }
     state.wvw = wvw;
     memset(&tray_options, 0, sizeof(tray_options));
-    tray_options.icon = icon;
+    running = gateway_running();
+    tray_options.icon = running ? tray_started : tray_stopped;
     tray_options.tooltip = "kaiman";
     if (kc_tray_open(&state.tray, &tray_options) != KC_TRAY_OK) {
         detail = state.tray != NULL ? kc_tray_get_error(state.tray) : NULL;
@@ -1203,7 +1213,7 @@ int kc_kaiman_gui_run(void) {
     if (kc_tray_add_item(state.tray, &open_item, "Open",
         tray_open, &state) != KC_TRAY_OK ||
         kc_tray_add_item(state.tray, &state.toggle,
-            gateway_running() != 0 ? "Stop" : "Start",
+            running ? "Stop" : "Start",
             tray_toggle, &state) != KC_TRAY_OK ||
         kc_tray_add_separator(state.tray, &separator) != KC_TRAY_OK ||
         kc_tray_add_item(state.tray, &quit_item, "Quit",
@@ -1219,10 +1229,19 @@ int kc_kaiman_gui_run(void) {
     signal(SIGTERM, gui_signal);
 #endif
     while (state.stop == 0) {
-        if (state.toggle_dirty != 0 && state.toggle != NULL) {
+        if (state.toggle_dirty != 0 || kc_util_seconds() >= next_status) {
+            int current;
+
             state.toggle_dirty = 0;
-            (void)kc_tray_item_set_text(state.toggle,
-                gateway_running() != 0 ? "Stop" : "Start");
+            next_status = kc_util_seconds() + 1.0;
+            current = gateway_running();
+            if (current != running &&
+                kc_tray_set_icon(state.tray,
+                    current ? tray_started : tray_stopped) == KC_TRAY_OK &&
+                kc_tray_item_set_text(state.toggle,
+                    current ? "Stop" : "Start") == KC_TRAY_OK) {
+                running = current;
+            }
         }
         if (focus_path != NULL) {
             focus = fopen(focus_path, "r");
@@ -1244,6 +1263,8 @@ done:
     kc_kaiman_free(focus_path);
     kc_kaiman_free(url);
     kc_kaiman_free(icon);
+    kc_kaiman_free(tray_started);
+    kc_kaiman_free(tray_stopped);
     kc_kaiman_free(kc_gui_result);
     kc_gui_result = NULL;
     return result;

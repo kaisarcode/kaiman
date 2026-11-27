@@ -33,7 +33,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${KC_OUTPUT_DIR}")
 if(KC_GUI)
     file(MAKE_DIRECTORY "${KC_OUTPUT_DIR}/gui")
     foreach(asset index.html app.js styles.css logo-46.png logo-92.png
-        logo-128.png logo.ico)
+        logo-128.png logo.ico tray-started.png tray-stopped.png
+        tray-started.ico tray-stopped.ico)
         configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/gui/${asset}"
             "${KC_OUTPUT_DIR}/gui/${asset}" COPYONLY)
     endforeach()

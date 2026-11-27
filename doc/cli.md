@@ -62,3 +62,9 @@ The check uses the current form, including unsaved connection settings and
 credentials, and displays the model count or an error below the buttons.
 It works while the gateway is stopped. It does not send an inference request
 or save the service.
+
+## System tray
+
+The system tray uses dedicated padded icons. The icon is grayscale while the
+gateway is stopped and colored while it is running. The tray follows the
+gateway state, including changes made through the CLI.
