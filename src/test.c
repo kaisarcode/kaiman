@@ -890,25 +890,44 @@ static int integration(const char *path) {
     free(response);
     response = test_request("GET", "/v1/providers", NULL, &size);
     if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
-        strstr(response, "{\"data\":[") == NULL ||
-        strstr(response, "{\"name\":\"mock\",\"slug\":\"mock\"}") == NULL ||
-        strstr(response, "{\"name\":\"ollama\",\"slug\":\"ollama\"}") == NULL ||
-        strstr(response, "{\"name\":\"gemini\",\"slug\":\"gemini\"}") == NULL ||
-        strstr(response, "{\"name\":\"bedrock\",\"slug\":\"bedrock\"}") == NULL ||
-        strstr(response, "\"slug\":\"openai\"") != NULL ||
+        strstr(response, "{\"name\":\"OpenAI\",\"slug\":\"openai\"}") == NULL ||
+        strstr(response, "\"slug\":\"opencode-local\"") == NULL ||
+        strstr(response, "\"slug\":\"codex-local\"") == NULL ||
         strstr(response, "\"slug\":\"opencode\"") == NULL ||
         strstr(response, "\"slug\":\"opencode-cloud\"") == NULL ||
-        strstr(response, "127.0.0.1:49382") != NULL ||
-        strstr(response, "\"adapter\"") != NULL ||
-        strstr(response, "\"keyring\"") != NULL) {
+        strstr(response, "\"slug\":\"anthropic\"") == NULL ||
+        strstr(response, "\"slug\":\"gemini\"") == NULL ||
+        strstr(response, "\"slug\":\"responses\"") == NULL ||
+        strstr(response, "\"slug\":\"ollama\"") == NULL ||
+        strstr(response, "\"slug\":\"bedrock\"") == NULL ||
+        strstr(response, "\"slug\":\"mock\"") != NULL) {
         fprintf(stderr, "providers endpoint failed\n");
         result = 1;
     }
     free(response);
-    response = test_request("GET", "/v1/sessions?provider=opencode", NULL,
+    response = test_request("GET", "/v1/services", NULL, &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
+        strstr(response, "{\"data\":[") == NULL ||
+        strstr(response, "\"slug\":\"mock\",\"provider\":\"openai\"") == NULL ||
+        strstr(response, "\"slug\":\"ollama\",\"provider\":\"ollama\"") == NULL ||
+        strstr(response, "\"slug\":\"gemini\",\"provider\":\"gemini\"") == NULL ||
+        strstr(response, "\"slug\":\"bedrock\",\"provider\":\"bedrock\"") == NULL ||
+        strstr(response, "\"slug\":\"openai\"") != NULL ||
+        strstr(response, "\"slug\":\"opencode\"") == NULL ||
+        strstr(response, "\"slug\":\"opencode-cloud\"") == NULL ||
+        strstr(response, "\"slug\":\"codex-local\"") != NULL ||
+        strstr(response, "127.0.0.1:49382") != NULL ||
+        strstr(response, "\"keyring\"") != NULL) {
+        fprintf(stderr, "services endpoint failed\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("GET", "/v1/sessions?service=opencode", NULL,
         &size);
     if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
         strstr(response, "\"id\":\"opencode/ses_demo\"") == NULL ||
+        strstr(response, "\"service\":\"opencode\"") == NULL ||
+        strstr(response, "\"provider\":") != NULL ||
         strstr(response, "\"title\":\"Demo\",\"status\":\"idle\"") == NULL ||
         strstr(response, "\"id\":\"opencode/ses_busy\"") == NULL ||
         strstr(response, "\"title\":\"Busy\",\"status\":\"active\"") == NULL) {
@@ -916,7 +935,7 @@ static int integration(const char *path) {
         result = 1;
     }
     free(response);
-    response = test_request("GET", "/v1/sessions?provider=mock", NULL, &size);
+    response = test_request("GET", "/v1/sessions?service=mock", NULL, &size);
     if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
         strstr(response, "{\"data\":[]}") == NULL) {
         fprintf(stderr, "stateless provider session discovery failed\n");
@@ -976,7 +995,7 @@ static int integration(const char *path) {
         "\"session\":\"mock/ses_demo\",\"messages\":["
         "{\"role\":\"user\",\"content\":\"hi\"}]}", &size);
     if (response == NULL || strstr(response, "HTTP/1.1 400") == NULL) {
-        fprintf(stderr, "mismatched session provider accepted\n");
+        fprintf(stderr, "mismatched session service accepted\n");
         result = 1;
     }
     free(response);
@@ -984,7 +1003,7 @@ static int integration(const char *path) {
         "{\"model\":\"mock/model-a\",\"session\":\"mock/ses_demo\","
         "\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", &size);
     if (response == NULL || strstr(response, "HTTP/1.1 400") == NULL) {
-        fprintf(stderr, "unsupported session provider accepted\n");
+        fprintf(stderr, "unsupported session service accepted\n");
         result = 1;
     }
     free(response);
@@ -1026,45 +1045,51 @@ static int integration(const char *path) {
     }
     free(response);
     response = test_request("GET", "/v1/models?provider=mock", NULL, &size);
+    if (response == NULL || strstr(response, "HTTP/1.1 400") == NULL) {
+        fprintf(stderr, "obsolete provider filter accepted\n");
+        result = 1;
+    }
+    free(response);
+    response = test_request("GET", "/v1/models?service=mock", NULL, &size);
     if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
         strstr(response, "\"id\":\"mock/model-a\"") == NULL ||
         strstr(response, "\"id\":\"mock/model-b\"") == NULL ||
         strstr(response, "\"id\":\"ollama/") != NULL ||
         strstr(response, "\"id\":\"anthropic/") != NULL) {
-        fprintf(stderr, "single provider filter failed\n");
+        fprintf(stderr, "single service filter failed\n");
         result = 1;
     }
     free(response);
-    response = test_request("GET", "/v1/models?provider=mock%2Collama",
+    response = test_request("GET", "/v1/models?service=mock%2Collama",
         NULL, &size);
     if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
         strstr(response, "\"id\":\"mock/model-a\"") == NULL ||
         strstr(response, "\"id\":\"ollama/model-a\"") == NULL ||
         strstr(response, "\"id\":\"gemini/") != NULL) {
-        fprintf(stderr, "multiple provider filter failed\n");
+        fprintf(stderr, "multiple service filter failed\n");
         result = 1;
     }
     free(response);
-    response = test_request("GET", "/v1/models?provider=mock&provider=ollama",
+    response = test_request("GET", "/v1/models?service=mock&service=ollama",
         NULL, &size);
     if (response == NULL || strstr(response, "\"id\":\"mock/model-a\"") == NULL ||
         strstr(response, "\"id\":\"ollama/model-a\"") == NULL ||
         strstr(response, "\"id\":\"gemini/") != NULL) {
-        fprintf(stderr, "repeated provider filter failed\n");
+        fprintf(stderr, "repeated service filter failed\n");
         result = 1;
     }
     free(response);
-    response = test_request("GET", "/v1/models?provider=missing", NULL, &size);
+    response = test_request("GET", "/v1/models?service=missing", NULL, &size);
     if (response == NULL || strstr(response, "HTTP/1.1 200") == NULL ||
         strstr(response, "\"data\":[]") == NULL) {
-        fprintf(stderr, "unknown provider filter failed\n");
+        fprintf(stderr, "unknown service filter failed\n");
         result = 1;
     }
     free(response);
-    response = test_request("GET", "/v1/models?provider=mock,,ollama",
+    response = test_request("GET", "/v1/models?service=mock,,ollama",
         NULL, &size);
     if (response == NULL || strstr(response, "HTTP/1.1 400") == NULL) {
-        fprintf(stderr, "invalid provider filter accepted\n");
+        fprintf(stderr, "invalid service filter accepted\n");
         result = 1;
     }
     free(response);

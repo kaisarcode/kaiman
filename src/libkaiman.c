@@ -191,34 +191,51 @@ static int valid_value(const char *value) {
     return 1;
 }
 
+typedef struct {
+    const char *slug;
+    const char *name;
+    const char *url;
+} kc_provider_t;
+
+static const kc_provider_t providers[] = {
+    {"openai", "OpenAI", "https://api.openai.com/v1"},
+    {"opencode-local", "OpenCode Local", NULL},
+    {"opencode", "OpenCode Server", "http://127.0.0.1:4096"},
+    {"opencode-cloud", "OpenCode Cloud", "https://opencode.ai/inference"},
+    {"codex-local", "Codex Local", NULL},
+    {"anthropic", "Anthropic", "https://api.anthropic.com/v1"},
+    {"gemini", "Gemini", "https://generativelanguage.googleapis.com/v1beta"},
+    {"responses", "Responses", "https://api.openai.com/v1"},
+    {"ollama", "Ollama", "http://127.0.0.1:11434"},
+    {"bedrock", "Bedrock", "https://bedrock-runtime.us-east-1.amazonaws.com"}
+};
+
 /**
- * Return the default base URL for a supported adapter.
+ * Find a supported provider by its adapter identifier.
  * @param adapter Adapter identifier.
- * @return Borrowed default URL, or NULL for an unknown adapter.
+ * @return Borrowed provider metadata, or NULL when unknown.
  */
-const char *kc_kaiman_default_url(const char *adapter) {
-    static const struct {
-        const char *adapter;
-        const char *url;
-    } defaults[] = {
-        {"openai", "https://api.openai.com/v1"},
-        {"opencode", "http://127.0.0.1:4096"},
-        {"opencode-cloud", "https://opencode.ai/inference"},
-        {"anthropic", "https://api.anthropic.com/v1"},
-        {"gemini", "https://generativelanguage.googleapis.com/v1beta"},
-        {"responses", "https://api.openai.com/v1"},
-        {"ollama", "http://127.0.0.1:11434"},
-        {"bedrock", "https://bedrock-runtime.us-east-1.amazonaws.com"}
-    };
+static const kc_provider_t *provider_find(const char *adapter) {
     size_t index;
 
     if (adapter == NULL) return NULL;
-    for (index = 0U; index < sizeof(defaults) / sizeof(defaults[0]); index++) {
-        if (strcmp(defaults[index].adapter, adapter) == 0) {
-            return defaults[index].url;
+    for (index = 0U; index < sizeof(providers) / sizeof(providers[0]); index++) {
+        if (strcmp(providers[index].slug, adapter) == 0) {
+            return &providers[index];
         }
     }
     return NULL;
+}
+
+/**
+ * Return the default base URL for a supported adapter.
+ * @param adapter Adapter identifier.
+ * @return Borrowed default URL, or NULL when unavailable.
+ */
+const char *kc_kaiman_default_url(const char *adapter) {
+    const kc_provider_t *provider = provider_find(adapter);
+
+    return provider != NULL ? provider->url : NULL;
 }
 
 /**
@@ -562,9 +579,7 @@ static int apply_field(kc_kaiman_service_t *service, const char *key,
         strcmp(key, "display_name") == 0) {
         target = &service->display_name;
     } else if (strcmp(key, "adapter") == 0) {
-        if (kc_kaiman_default_url(value) == NULL &&
-            strcmp(value, "opencode-local") != 0 &&
-            strcmp(value, "codex-local") != 0) {
+        if (provider_find(value) == NULL) {
             set_error(kaiman, "unknown adapter: %s", value);
             return KC_KAIMAN_EINVAL;
         }
@@ -1839,7 +1854,7 @@ static int session_valid(const char *id) {
 }
 
 /**
- * Resolve the provider prefix of an explicit session.
+ * Resolve the service prefix of an explicit session.
  * @param service Selected service.
  * @param value Namespaced session identifier.
  * @return Borrowed upstream identifier, or NULL for a mismatch.
@@ -4825,7 +4840,7 @@ static int catalog_hex(unsigned char byte) {
 }
 
 /**
- * Parse optional provider filters into a comma-separated service list.
+ * Parse optional service filters into a comma-separated service list.
  * @param query Borrowed HTTP query string, or NULL.
  * @param out Receives owned filter text, or NULL when absent.
  * @return KC_KAIMAN_OK or an error status.
@@ -4847,11 +4862,14 @@ static int catalog_filter(const char *query, char **out) {
         if (end == NULL) end = start + strlen(start);
         if ((size_t)(end - start) >= 8U &&
             strncmp(start, "provider", 8U) == 0 &&
-            (start + 8U == end || start[8] == '=')) {
-            if (start + 8U == end) goto invalid;
+            (start + 8U == end || start[8] == '=')) goto invalid;
+        if ((size_t)(end - start) >= 7U &&
+            strncmp(start, "service", 7U) == 0 &&
+            (start + 7U == end || start[7] == '=')) {
+            if (start + 7U == end) goto invalid;
             if (size != 0U) filter[size++] = ',';
             name_size = 0U;
-            for (cursor = start + 9U; cursor < end; cursor++) {
+            for (cursor = start + 8U; cursor < end; cursor++) {
                 unsigned char byte = (unsigned char)*cursor;
 
                 if (byte == '%') {
@@ -4915,12 +4933,48 @@ static int catalog_selected(const char *filter, const char *name) {
 }
 
 /**
- * Build the list of configured providers without contacting upstream servers.
+ * Build a catalog of supported provider types.
+ * @param out Receives owned JSON text.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int gateway_providers(char **out) {
+    kc_buffer_t *buffer = NULL;
+    size_t index;
+    int status;
+
+    *out = NULL;
+    status = kc_buffer_open(&buffer);
+    if (status != KC_KAIMAN_OK) return status;
+    status = kc_buffer_text(buffer, "{\"data\":[");
+    for (index = 0U; status == KC_KAIMAN_OK &&
+        index < sizeof(providers) / sizeof(providers[0]); index++) {
+        status = kc_buffer_text(buffer, index == 0U ?
+            "{\"name\":" : ",{\"name\":");
+        if (status == KC_KAIMAN_OK) {
+            status = json_write_text(buffer, providers[index].name);
+        }
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, ",\"slug\":");
+        if (status == KC_KAIMAN_OK) {
+            status = json_write_text(buffer, providers[index].slug);
+        }
+        if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}");
+    }
+    if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "]}");
+    if (status == KC_KAIMAN_OK) {
+        *out = kc_util_strdup(kc_buffer_value(buffer));
+        if (*out == NULL) status = KC_KAIMAN_ENOMEM;
+    }
+    kc_buffer_close(buffer);
+    return status;
+}
+
+/**
+ * Build the list of configured services without contacting upstream servers.
  * @param kaiman Open manager.
  * @param out Receives owned JSON text.
  * @return KC_KAIMAN_OK or an error status.
  */
-static int gateway_providers(const kc_kaiman_t *kaiman, char **out) {
+static int gateway_services(const kc_kaiman_t *kaiman, char **out) {
     kc_buffer_t *buffer = NULL;
     size_t index;
     int status;
@@ -4930,13 +4984,23 @@ static int gateway_providers(const kc_kaiman_t *kaiman, char **out) {
     if (status != KC_KAIMAN_OK) return status;
     status = kc_buffer_text(buffer, "{\"data\":[");
     for (index = 0U; status == KC_KAIMAN_OK && index < kaiman->count; index++) {
-        const char *name = kaiman->services[index]->name;
+        const kc_kaiman_service_t *service = kaiman->services[index];
+        const char *name = service->display_name;
 
+        if (name == NULL || *name == '\0') name = service->name;
         status = kc_buffer_text(buffer, index == 0U ?
             "{\"name\":" : ",{\"name\":");
         if (status == KC_KAIMAN_OK) status = json_write_text(buffer, name);
         if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, ",\"slug\":");
-        if (status == KC_KAIMAN_OK) status = json_write_text(buffer, name);
+        if (status == KC_KAIMAN_OK) {
+            status = json_write_text(buffer, service->name);
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = kc_buffer_text(buffer, ",\"provider\":");
+        }
+        if (status == KC_KAIMAN_OK) {
+            status = json_write_text(buffer, service->adapter);
+        }
         if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}");
     }
     if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "]}");
@@ -5000,7 +5064,7 @@ static int gateway_models(kc_kaiman_gateway_t *gateway, const char *filter,
 /**
  * Write normalized session metadata without exposing the transcript.
  * @param buffer Destination buffer.
- * @param service Configured provider.
+ * @param service Configured service.
  * @param id Upstream session identifier.
  * @param title Optional session title.
  * @param state Normalized runtime state.
@@ -5022,7 +5086,7 @@ static int session_write(kc_buffer_t *buffer,
         status = json_write_text(buffer, kc_buffer_value(name));
     }
     if (status == KC_KAIMAN_OK) {
-        status = kc_buffer_text(buffer, ",\"provider\":");
+        status = kc_buffer_text(buffer, ",\"service\":");
     }
     if (status == KC_KAIMAN_OK) status = json_write_text(buffer, service->name);
     if (status == KC_KAIMAN_OK) {
@@ -5216,7 +5280,7 @@ static int session_codex(kc_kaiman_gateway_t *gateway,
 /**
  * Build a session catalog from selected session-capable providers.
  * @param gateway Open gateway.
- * @param filter Selected provider names, or NULL for all.
+ * @param filter Selected service names, or NULL for all.
  * @param out Receives owned JSON text.
  * @return KC_KAIMAN_OK or an error status.
  */
@@ -5558,15 +5622,29 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
     if (strcmp(request->method, "GET") == 0 &&
         strcmp(request->path, "/v1/providers") == 0) {
         char *providers = NULL;
-        int status = gateway_providers(gateway->manager, &providers);
+        int status = gateway_providers(&providers);
 
         if (status != KC_KAIMAN_OK) {
             (void)gateway_failure(gateway, connection->peer, 500,
-                "could not list configured providers");
+                "could not list supported providers");
         } else {
             (void)gateway_json(gateway, connection->peer, 200, providers);
             kc_kaiman_free(providers);
         }
+        return;
+    }
+    if (strcmp(request->method, "GET") == 0 &&
+        strcmp(request->path, "/v1/services") == 0) {
+        char *services = NULL;
+        int status = gateway_services(gateway->manager, &services);
+
+        if (status != KC_KAIMAN_OK) {
+            (void)gateway_failure(gateway, connection->peer, 500,
+                "could not list configured services");
+        } else {
+            (void)gateway_json(gateway, connection->peer, 200, services);
+        }
+        free(services);
         return;
     }
     if (strcmp(request->method, "GET") == 0 &&
@@ -5623,7 +5701,7 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
 
         if (status == KC_KAIMAN_EINVAL) {
             (void)gateway_failure(gateway, connection->peer, 400,
-                "invalid provider filter");
+                "invalid service filter");
             return;
         }
         if (status == KC_KAIMAN_OK) {
@@ -5669,7 +5747,7 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
                     session_raw(service, kc_json_text(
                         kc_json_member(root, "session"))) == NULL)) {
                 (void)gateway_failure(gateway, connection->peer, 400,
-                    "invalid or unsupported session for selected provider");
+                    "invalid or unsupported session for selected service");
             } else if (strcmp(service->adapter, "opencode-local") == 0) {
                 (void)opencode_auto_chat(gateway, connection->peer, root,
                     service, model);

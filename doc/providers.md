@@ -1,5 +1,10 @@
 # Providers
 
+A provider identifies a supported adapter type. A service is a configured
+instance of a provider. The HTTP API exposes these separately through
+`/v1/providers` and `/v1/services`. The provider slug matches the `adapter`
+configuration field.
+
 ## Default URLs
 
 | Adapter | Default URL |

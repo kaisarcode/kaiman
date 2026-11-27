@@ -6,20 +6,33 @@ The gateway listens on `127.0.0.1:49380` by default. Change `listen` in the
 | Method | Path | Behavior |
 | --- | --- | --- |
 | `GET` | `/health` | Returns `{"status":"ok"}`. |
-| `GET` | `/v1/providers` | Lists configured providers. |
-| `GET` | `/v1/models` | Discovers models from configured providers. |
-| `GET` | `/v1/sessions` | Discovers provider sessions. |
+| `GET` | `/v1/providers` | Lists supported provider types. |
+| `GET` | `/v1/services` | Lists configured services. |
+| `GET` | `/v1/models` | Discovers models from configured services. |
+| `GET` | `/v1/sessions` | Discovers service sessions. |
 | `POST` | `/v1/sessions` | Creates a session. |
 | `POST` | `/v1/sessions/fork` | Forks a session. |
 | `POST` | `/v1/chat/completions` | Selects a service by `model` and forwards the chat request. |
 
-## Providers and models
+## Providers and services
 
-The provider list returns `{"data":[{"name":"local","slug":"local"}]}` for a
-service named `local`. The `name` and `slug` are the configured service name.
-Only configured services are listed, without upstream requests or credentials.
-The `slug` can be passed to the model catalog as a provider filter. An empty
-configuration returns `{"data":[]}`.
+A provider is a supported adapter type. `/v1/providers` lists every supported
+provider with its display `name` and adapter `slug`, independently of the
+configured services. For example, `{"name":"OpenAI","slug":"openai"}`.
+
+A service is a configured instance of a provider. `/v1/services` returns a
+list of objects containing `name` (display name, falling back to the slug),
+`slug` (configured service identifier), and `provider` (adapter slug).
+For example:
+
+```json
+{"data":[{"name":"Local OpenAI","slug":"local","provider":"openai"}]}
+```
+
+Both catalogs require no upstream requests and expose no credentials or
+connection URLs. An empty service configuration returns `{"data":[]}`.
+
+## Models
 
 A chat request uses a model identifier returned by the model catalog and a
 `messages` array. Each identifier has the form `service/model`. Model selection
@@ -28,19 +41,20 @@ the request upstream. Multiple services can expose the same upstream model.
 
 ```sh
 curl http://127.0.0.1:49380/v1/providers
+curl http://127.0.0.1:49380/v1/services
 curl http://127.0.0.1:49380/v1/models
-curl "http://127.0.0.1:49380/v1/models?provider=openai"
-curl "http://127.0.0.1:49380/v1/models?provider=openai,ollama"
+curl "http://127.0.0.1:49380/v1/models?service=openai"
+curl "http://127.0.0.1:49380/v1/models?service=openai,ollama"
 ```
 
-The optional `provider` query parameter selects configured service names, not
-adapter types. Only selected providers are queried. Comma-separated and repeated
-parameters are supported. Unmatched names return no models; malformed filters
-return 400.
+The optional `service` query parameter selects configured service slugs.
+Only selected services are queried. Comma-separated and repeated parameters
+are supported. Unmatched names return no models; malformed filters return
+400. The obsolete `provider` filter is rejected.
 
-The catalog is refreshed from providers on each request. Unreachable providers
-are omitted when other catalogs succeed; if every selected provider fails,
-the gateway returns 502. A provider catalog does not guarantee that every
+The catalog is refreshed from services on each request. Unreachable services
+are omitted when other catalogs succeed; if every selected service fails,
+the gateway returns 502. A model catalog does not guarantee that every
 listed model supports chat or that account permissions allow inference.
 
 ## Chat completions

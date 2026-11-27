@@ -18,6 +18,7 @@ kaiman add local-codex adapter=codex-local
 kaiman start
 
 curl http://127.0.0.1:49380/v1/providers
+curl http://127.0.0.1:49380/v1/services
 curl http://127.0.0.1:49380/v1/models
 curl http://127.0.0.1:49380/v1/sessions
 ```

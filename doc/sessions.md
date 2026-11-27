@@ -1,8 +1,8 @@
 # Sessions
 
 Kaiman exposes session-aware providers through a common HTTP contract.
-A session ID has the form `provider/session`, where `provider` is a configured
-service name and the second component is the native session or thread ID.
+A session ID has the form `service/session`, where `service` is a configured
+service slug and the second component is the native session or thread ID.
 
 | Adapter | List | Create | Fork | Continue |
 | --- | --- | --- | --- | --- |
@@ -16,16 +16,16 @@ service name and the second component is the native session or thread ID.
 
 ```sh
 curl http://127.0.0.1:49380/v1/sessions
-curl "http://127.0.0.1:49380/v1/sessions?provider=local-opencode,local-codex"
+curl "http://127.0.0.1:49380/v1/sessions?service=local-opencode,local-codex"
 ```
 
-The optional provider filter accepts configured service names, repeated
+The optional `service` filter accepts configured service slugs, repeated
 parameters or comma-separated values, like the model catalog. Kaiman queries
 only matching session-capable services and follows upstream pagination. Archived
 sessions and ephemeral Codex threads are excluded. Codex lists local history
-visible to the authenticated account. Providers that do not list sessions are
-omitted. If no session-capable provider matches, the result is an empty list.
-If all matching session-capable providers fail, the gateway returns 502.
+visible to the authenticated account. Services that do not list sessions are
+omitted. If no session-capable service matches, the result is an empty list.
+If all matching session-capable services fail, the gateway returns 502.
 
 Response:
 
@@ -34,7 +34,7 @@ Response:
     "data": [
         {
             "id": "local-opencode/ses_abc123",
-            "provider": "local-opencode",
+            "service": "local-opencode",
             "title": "GitView",
             "status": "idle"
         }
@@ -42,7 +42,7 @@ Response:
 }
 ```
 
-Session metadata includes the namespaced ID, configured provider name, title
+Session metadata includes the namespaced ID, configured service slug, title
 (or null), and runtime status. Status is `idle`, `active`, `error` or
 `unknown`. OpenCode activity comes from its server's active-session map.
 Codex status comes from the app-server. An unloaded thread has unknown runtime
@@ -104,7 +104,7 @@ curl -X POST http://127.0.0.1:49380/v1/chat/completions \
     }'
 ```
 
-The provider prefix of the model must match the session's provider. Send
+The service prefix of the model must match the session's service. Send
 only new messages for stateful OpenCode or Codex requests; the provider
 already has the preceding conversation. OpenCode reads new events using a
 pre-prompt anchor and paginates only as far back as that event. Explicit
@@ -124,7 +124,7 @@ conversation and is not included in the catalog.
 
 Kaiman rejects a session parameter for adapters that have no session support.
 Session extension requests with invalid identifiers, unsupported adapters
-or incompatible provider prefixes return 400. A provider not found during
+or incompatible service prefixes return 400. A service not found during
 creation or forking returns 404; upstream failures return 502. Reusing sessions
 does not change the provider's quota rules.
 
