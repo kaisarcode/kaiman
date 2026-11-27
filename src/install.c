@@ -19,6 +19,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,7 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <io.h>
 #include <shlobj.h>
 #else
 #include <dirent.h>
@@ -52,7 +54,9 @@
 typedef struct {
     char *source;
     char *directory;
+    char *registry;
     char *response;
+    const char *blocked;
     atomic_int stop;
     atomic_int ready;
     atomic_int remove_runtime;
@@ -188,6 +192,51 @@ static int install_absolute(const char *path) {
 }
 
 /**
+ * Resolve the installation registry in the private state directory.
+ * @return Owned registry path, or NULL on failure.
+ */
+static char *install_registry_path(void) {
+    char *path = kc_util_pid_path();
+    char *end;
+    char *result;
+
+    if (path == NULL) return NULL;
+    end = strrchr(path, '/');
+    if (end == NULL) {
+        free(path);
+        return NULL;
+    }
+    *end = '\0';
+    result = install_join(path, "install.path");
+    free(path);
+    return result;
+}
+
+/**
+ * Read the registered installation directory.
+ * @param registry Registry file path.
+ * @param out Receives an owned absolute directory when installed.
+ * @return 1 when installed, 0 when absent, -1 when invalid.
+ */
+static int install_registry_read(const char *registry, char **out) {
+    struct stat info;
+    char *data;
+    size_t size = 0U;
+
+    *out = NULL;
+    if (registry == NULL) return -1;
+    if (stat(registry, &info) != 0) return errno == ENOENT ? 0 : -1;
+    if (!S_ISREG(info.st_mode)) return -1;
+    data = kc_util_read_file(registry, &size);
+    if (data == NULL || strlen(data) != size || !install_absolute(data)) {
+        free(data);
+        return -1;
+    }
+    *out = data;
+    return 1;
+}
+
+/**
  * Copy one runtime file without truncating the source.
  * @param source Source directory.
  * @param directory Destination directory.
@@ -292,13 +341,43 @@ static char *install_command(const char *executable) {
 }
 
 /**
+ * Reserve one installation directory without replacing an existing record.
+ * @param registry Registry file path.
+ * @param directory Absolute installation directory.
+ * @return 1 on success, otherwise 0.
+ */
+static int install_registry_claim(const char *registry, const char *directory) {
+    size_t size = strlen(directory);
+    FILE *file;
+    int fd;
+    int ok;
+
+#ifdef _WIN32
+    fd = _open(registry, _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY,
+        _S_IREAD | _S_IWRITE);
+    if (fd < 0) return 0;
+    file = _fdopen(fd, "wb");
+    if (file == NULL) _close(fd);
+#else
+    fd = open(registry, O_CREAT | O_EXCL | O_WRONLY, 0600);
+    if (fd < 0) return 0;
+    file = fdopen(fd, "wb");
+    if (file == NULL) close(fd);
+#endif
+    ok = file != NULL && fwrite(directory, 1U, size, file) == size;
+    if (file != NULL && fclose(file) != 0) ok = 0;
+    if (!ok) remove(registry);
+    return ok;
+}
+
+/**
  * Copy the runtime and register its native menu entry.
  * @param state Installer context.
  * @param directory Destination directory.
  * @param category Native menu category.
  * @return Error description, or NULL on success.
  */
-static const char *install_runtime(kc_install_t *state, const char *directory,
+static const char *install_copy_runtime(kc_install_t *state, const char *directory,
     const char *category) {
     kc_menu_entry_t entry;
     char *assets;
@@ -371,6 +450,36 @@ static const char *install_runtime(kc_install_t *state, const char *directory,
             error = "Unable to record installation.";
         }
         free(marker);
+    }
+    return error;
+}
+
+/**
+ * Install only when no installation is registered.
+ * @param state Installer context.
+ * @param directory Destination directory.
+ * @param category Native menu category.
+ * @return Error message, or NULL on success.
+ */
+static const char *install_runtime(kc_install_t *state, const char *directory,
+    const char *category) {
+    const char *error;
+    char *registered = NULL;
+    int status;
+
+    if (!install_absolute(directory)) return "Enter an absolute directory.";
+    status = install_registry_read(state->registry, &registered);
+    free(registered);
+    if (status == 1) return "Kaiman is already installed.";
+    if (status != 0) return "Unable to read the installation registry.";
+    if (!install_registry_claim(state->registry, directory)) {
+        return "Unable to reserve the installation registry.";
+    }
+    error = install_copy_runtime(state, directory, category);
+    if (error != NULL) {
+        if (remove(state->registry) != 0) {
+            return "Installation failed and the registry could not be cleared.";
+        }
     }
     return error;
 }
@@ -638,10 +747,19 @@ done:
  */
 static const char *uninstall_prepare(kc_install_t *state, int purge) {
     const char *error;
+    char *registered = NULL;
+    int status = install_registry_read(state->registry, &registered);
 
-    if (!uninstall_registered(state->source)) {
-        return "Run the uninstaller from the installed directory.";
+    if (status != 1) {
+        return status == 0 ? "Kaiman is not installed." :
+            "Unable to read the installation registry.";
     }
+    if (strcmp(state->directory, registered) != 0 ||
+        !uninstall_registered(registered)) {
+        free(registered);
+        return "The registered installation is missing or has changed.";
+    }
+    free(registered);
     error = uninstall_stop();
     if (error != NULL) return error;
     if (purge) {
@@ -673,7 +791,18 @@ static int uninstall_delete_command(kc_buffer_t *command, const char *name) {
         status = kc_buffer_append(command, &ch, 1U);
     }
     if (status == KC_KAIMAN_OK) {
-        status = kc_buffer_text(command, "\" >nul 2>&1 & ");
+        status = kc_buffer_text(command, "\" >nul 2>&1 & if exist ");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(command, "\"!KC_KAIMAN_REMOVE!\\");
+    }
+    for (cursor = name; status == KC_KAIMAN_OK && *cursor; cursor++) {
+        char ch = *cursor == '/' ? '\\' : *cursor;
+
+        status = kc_buffer_append(command, &ch, 1U);
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(command, "\" set KC_KAIMAN_PENDING=1 & ");
     }
     return status;
 }
@@ -681,9 +810,10 @@ static int uninstall_delete_command(kc_buffer_t *command, const char *name) {
 /**
  * Dispatch cleanup after the Windows process releases its executable.
  * @param directory Installed directory.
+ * @param registry Installation registry path.
  * @return 1 when cleanup was launched, otherwise 0.
  */
-static int uninstall_windows(const char *directory) {
+static int uninstall_windows(const char *directory, const char *registry) {
     static const char *const optional[] = {"libgcc_s_seh-1.dll",
         "libstdc++-6.dll", "libwinpthread-1.dll"};
     char system[MAX_PATH];
@@ -697,13 +827,15 @@ static int uninstall_windows(const char *directory) {
     int result = 0;
 
     if (GetSystemDirectoryA(system, sizeof(system)) == 0 ||
-        !SetEnvironmentVariableA("KC_KAIMAN_REMOVE", directory)) return 0;
+        !SetEnvironmentVariableA("KC_KAIMAN_REMOVE", directory) ||
+        !SetEnvironmentVariableA("KC_KAIMAN_REGISTRY", registry)) return 0;
     shell = install_join(system, "cmd.exe");
     if (shell == NULL) goto done;
     status = kc_buffer_open(&command);
     if (status == KC_KAIMAN_OK) {
         status = kc_buffer_format(command,
-            "\"%s\" /D /V:ON /S /C \"for /L %%i in (1,1,30) do @(",
+            "\"%s\" /D /V:ON /S /C \"for /L %%i in (1,1,30) do @("
+            "set KC_KAIMAN_PENDING=0 & ",
             shell);
     }
     for (index = 0U; status == KC_KAIMAN_OK &&
@@ -716,10 +848,12 @@ static int uninstall_windows(const char *directory) {
     }
     if (status == KC_KAIMAN_OK) {
         status = kc_buffer_text(command,
-            "if not exist \"!KC_KAIMAN_REMOVE!\\uninstaller.exe\" ("
+            "if \"!KC_KAIMAN_PENDING!\"==\"0\" ("
             "del /F /Q \"!KC_KAIMAN_REMOVE!\\kaiman.install\" >nul 2>&1 & "
             "rd \"!KC_KAIMAN_REMOVE!\\gui\" >nul 2>&1 & "
-            "rd \"!KC_KAIMAN_REMOVE!\" >nul 2>&1 & exit /b 0) & "
+            "rd \"!KC_KAIMAN_REMOVE!\" >nul 2>&1 & "
+            "del /F /Q \"!KC_KAIMAN_REGISTRY!\" >nul 2>&1 & "
+            "exit /b 0) & "
             "ping -n 2 127.0.0.1 >nul) & exit /b 1\"");
     }
     if (status != KC_KAIMAN_OK) goto done;
@@ -745,11 +879,12 @@ done:
 /**
  * Remove installed files after closing the uninstaller interface.
  * @param directory Installed runtime directory.
+ * @param registry Installation registry path.
  * @return 1 on success or successful cleanup dispatch, otherwise 0.
  */
-static int uninstall_runtime(const char *directory) {
+static int uninstall_runtime(const char *directory, const char *registry) {
 #ifdef _WIN32
-    return uninstall_windows(directory);
+    return uninstall_windows(directory, registry);
 #else
     size_t index;
     char *assets;
@@ -767,7 +902,7 @@ static int uninstall_runtime(const char *directory) {
     if (assets != NULL) uninstall_empty(assets);
     free(assets);
     uninstall_empty(directory);
-    return 1;
+    return remove(registry) == 0 || errno == ENOENT;
 #endif
 }
 
@@ -856,6 +991,8 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
 
     if (strcmp(method, "mode") == 0) {
         message = state->uninstall ? "uninstall" : "install";
+    } else if (strcmp(method, "blocked") == 0) {
+        message = state->blocked;
     } else if (strcmp(method, "directory") == 0) {
         message = state->directory;
     } else if (strcmp(method, "browse") == 0) {
@@ -947,7 +1084,7 @@ static char *install_url(const char *source) {
  */
 int main(void) {
     static const char *const methods[] = {"mode", "directory", "browse",
-        "install", "uninstall", "close", "ready"};
+        "blocked", "install", "uninstall", "close", "ready"};
     kc_install_t state = {0};
     kc_wvw_options_t options = {0};
     kc_wvw_bridge_options_t bridge = {0};
@@ -968,9 +1105,27 @@ int main(void) {
 #ifdef KC_UNINSTALLER
     state.uninstall = 1;
 #endif
-    state.directory = state.uninstall ?
-        kc_util_strdup(state.source) : install_default();
-    if (state.source == NULL || state.directory == NULL) goto done;
+    state.registry = install_registry_path();
+    if (state.source == NULL || state.registry == NULL) goto done;
+    {
+        int registered = install_registry_read(state.registry, &state.directory);
+
+        if (registered < 0) {
+            state.blocked = "Unable to read the installation registry.";
+        } else if (state.uninstall && registered == 0) {
+            state.blocked = "Kaiman is not installed.";
+        } else if (!state.uninstall && registered == 1) {
+            state.blocked = "Kaiman is already installed.";
+        } else if (state.uninstall &&
+            !uninstall_registered(state.directory)) {
+            state.blocked = "The registered installation is missing.";
+        }
+        if (state.directory == NULL) {
+            state.directory = state.uninstall ?
+                kc_util_strdup("") : install_default();
+        }
+    }
+    if (state.directory == NULL) goto done;
     url = install_url(state.source);
     icon = install_join(state.source, INSTALL_ICON);
     if (url == NULL || icon == NULL) goto done;
@@ -1047,12 +1202,13 @@ done:
     }
     kc_wvw_close(wvw);
     if (atomic_load(&state.remove_runtime) &&
-        !uninstall_runtime(state.source)) {
+        !uninstall_runtime(state.directory, state.registry)) {
         fprintf(stderr, "kaiman: unable to remove installed files\n");
         result = 1;
     }
     free(state.response);
     free(state.directory);
+    free(state.registry);
     free(state.source);
     free(url);
     free(icon);

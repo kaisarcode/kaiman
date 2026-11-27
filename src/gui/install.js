@@ -15,6 +15,7 @@ var button = document.getElementById("install");
 var browse = document.getElementById("browse");
 var closeButton = document.getElementById("close");
 var installed = false;
+var blocked = false;
 var uninstall = false;
 var purge = document.getElementById("purge");
 
@@ -51,7 +52,7 @@ async function handleBrowse() {
  */
 async function handleInstall(event) {
     event.preventDefault();
-    if (installed) {
+    if (installed || blocked) {
         await window.NativeBridge.close();
         return;
     }
@@ -126,6 +127,7 @@ async function run() {
         }
         uninstall = await window.NativeBridge.mode() === "uninstall";
         directory.value = await window.NativeBridge.directory();
+        var message = await window.NativeBridge.blocked();
         if (uninstall) {
             document.title = "kaiman uninstaller";
             document.getElementById("category-field").hidden = true;
@@ -136,8 +138,19 @@ async function run() {
             button.classList.add("button-danger");
             button.textContent = "Uninstall";
         }
+        if (message) {
+            blocked = true;
+            directory.disabled = true;
+            category.disabled = true;
+            purge.disabled = true;
+            browse.hidden = true;
+            button.textContent = "Close";
+            button.classList.remove("button-danger");
+            button.classList.remove("button-primary");
+            showResult(message, false);
+        }
         button.disabled = false;
-        browse.disabled = uninstall;
+        browse.disabled = uninstall || blocked;
     } catch (error) {
         showResult(error.message || "Installer initialization failed.", false);
     }

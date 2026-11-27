@@ -99,13 +99,19 @@ defaults to Development. The menu entry launches `kaiman gui`.
 Existing application configuration and credentials are left unchanged.
 The installer copies the uninstaller and its menu library into the installed
 runtime. Menu registration is supported on Linux and Windows by libmenu.
+The installed directory is recorded in `install.path` under the private state
+directory (`$XDG_STATE_HOME/kaiman` or `$HOME/.local/state/kaiman`).
+Only one installation per user is allowed.
 
 ## Desktop uninstallation
 
-Run `uninstaller` or `uninstaller.exe` from the installed directory.
+Run `uninstaller` or `uninstaller.exe` from the installed directory or a
+desktop build. The registered installation path is read from `install.path`.
+Uninstallation is unavailable when no installation is registered.
 The uninstaller stops the GUI and gateway, removes the menu entry, and
 removes the installed runtime files. The directory is removed if empty.
 Configuration, credentials and local session references are retained by
 default and can be removed using the optional checkbox. Provider-side
 sessions and external agent credentials are left unchanged. On Windows,
-runtime cleanup is deferred until the uninstaller exits.
+runtime cleanup is deferred until the uninstaller exits. The installation
+record is removed after runtime cleanup.
