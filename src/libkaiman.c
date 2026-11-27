@@ -5950,20 +5950,7 @@ static int kaiman_pid(unsigned long long *pid) {
  * @return 1 when running, 0 otherwise.
  */
 static int kaiman_pid_alive(unsigned long long pid) {
-#ifdef _WIN32
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
-        (DWORD)pid);
-    DWORD code = 0U;
-    int alive;
-
-    if (process == NULL) return 0;
-    alive = GetExitCodeProcess(process, &code) != 0 && code == STILL_ACTIVE;
-    CloseHandle(process);
-    return alive;
-#else
-    if (pid > (unsigned long long)INT_MAX) return 0;
-    return kill((pid_t)pid, 0) == 0;
-#endif
+    return kc_util_pid_alive(pid);
 }
 
 /**

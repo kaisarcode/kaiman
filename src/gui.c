@@ -15,6 +15,7 @@
 #include "libwvw.h"
 #include "util.h"
 
+#include <ctype.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -988,6 +989,105 @@ done:
 }
 
 /**
+ * Resolve one private GUI state file path.
+ * @param name State filename.
+ * @return Owned path, or NULL on failure.
+ */
+static char *gui_state_path(const char *name) {
+    kc_buffer_t *path = NULL;
+    char *pid_path = kc_util_pid_path();
+    char *result = NULL;
+    char *separator;
+
+    if (pid_path == NULL) return NULL;
+    if (kc_buffer_open(&path) != KC_KAIMAN_OK) goto done;
+    separator = strrchr(pid_path, '/');
+    if (separator == NULL) goto done;
+    if (kc_buffer_format(path, "%.*s/%s",
+        (int)(separator - pid_path), pid_path, name) != KC_KAIMAN_OK) {
+        goto done;
+    }
+    result = kc_util_strdup(kc_buffer_value(path));
+
+done:
+    kc_buffer_close(path);
+    kc_kaiman_free(pid_path);
+    return result;
+}
+
+/**
+ * Read the identifier of a live GUI instance.
+ * @param pid Receives the process identifier.
+ * @return 1 when found, 0 otherwise.
+ */
+static int gui_instance(unsigned long long *pid) {
+    char *path = gui_state_path("kaiman-gui.pid");
+    char *data;
+    char *end = NULL;
+    unsigned long long value;
+    size_t size;
+    int found = 0;
+
+    if (path == NULL) return 0;
+    data = kc_util_read_file(path, &size);
+    free(path);
+    if (data == NULL) return 0;
+    value = strtoull(data, &end, 10);
+    while (*end != '\0' && isspace((unsigned char)*end)) end++;
+    if (end != data && *end == '\0' && value != 0ULL &&
+        kc_util_pid_alive(value) != 0) {
+        *pid = value;
+        found = 1;
+    }
+    free(data);
+    return found;
+}
+
+/**
+ * Claim single-instance ownership or ask the live instance to focus itself.
+ * @return 1 when this process owns the GUI, 0 when an instance already runs.
+ */
+static int gui_claim(void) {
+    char *path;
+    char text[32];
+    unsigned long long pid = 0ULL;
+    int result;
+
+    if (gui_instance(&pid) != 0) {
+        path = gui_state_path("kaiman-gui.focus");
+        if (path != NULL) {
+            (void)kc_util_write_private(path, "", 0U);
+            free(path);
+        }
+        return 0;
+    }
+    path = gui_state_path("kaiman-gui.pid");
+    if (path == NULL) return 0;
+    (void)snprintf(text, sizeof(text), "%llu\n", kc_util_process_id());
+    result = kc_util_write_private(path, text, strlen(text));
+    free(path);
+    return result;
+}
+
+/**
+ * Release the private GUI state owned by this instance.
+ * @return void
+ */
+static void gui_release(void) {
+    char *path = gui_state_path("kaiman-gui.pid");
+
+    if (path != NULL) {
+        remove(path);
+        free(path);
+    }
+    path = gui_state_path("kaiman-gui.focus");
+    if (path != NULL) {
+        remove(path);
+        free(path);
+    }
+}
+
+/**
  * Resolve the file URL of the bundled GUI entry document.
  * @return Owned URL, or NULL on failure.
  */
@@ -1034,12 +1134,16 @@ int kc_kaiman_gui_run(void) {
     kc_tray_item_t *quit_item = NULL;
     char *url = NULL;
     char *icon = NULL;
+    char *focus_path = NULL;
+    FILE *focus;
     const char *detail;
     int width = 1120;
     int height = 760;
     int hide_on_close = 1;
     int result = 1;
 
+    if (gui_claim() == 0) return 0;
+    focus_path = gui_state_path("kaiman-gui.focus");
     state.stop = 0;
     state.toggle_dirty = 0;
     state.wvw = NULL;
@@ -1120,6 +1224,14 @@ int kc_kaiman_gui_run(void) {
             (void)kc_tray_item_set_text(state.toggle,
                 gateway_running() != 0 ? "Stop" : "Start");
         }
+        if (focus_path != NULL) {
+            focus = fopen(focus_path, "r");
+            if (focus != NULL) {
+                fclose(focus);
+                remove(focus_path);
+                if (state.wvw != NULL) (void)kc_wvw_show(state.wvw);
+            }
+        }
         kc_util_sleep(100);
     }
     result = 0;
@@ -1128,6 +1240,8 @@ done:
     kc_gui_active = NULL;
     kc_tray_close(state.tray);
     kc_wvw_close(wvw);
+    gui_release();
+    kc_kaiman_free(focus_path);
     kc_kaiman_free(url);
     kc_kaiman_free(icon);
     kc_kaiman_free(kc_gui_result);

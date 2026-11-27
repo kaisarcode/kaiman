@@ -22,8 +22,12 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <limits.h>
+#include <process.h>
 #include <windows.h>
 #else
+#include <limits.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -606,4 +610,40 @@ char *kc_util_pid_path(void) {
     result = kc_util_strdup(kc_buffer_value(buffer));
     kc_buffer_close(buffer);
     return result;
+}
+
+/**
+ * Return the identifier of the current process.
+ * @return Process identifier.
+ */
+unsigned long long kc_util_process_id(void) {
+#ifdef _WIN32
+    return (unsigned long long)_getpid();
+#else
+    return (unsigned long long)getpid();
+#endif
+}
+
+/**
+ * Check whether one process identifier is running.
+ * @param pid Process identifier.
+ * @return 1 when running, 0 otherwise.
+ */
+int kc_util_pid_alive(unsigned long long pid) {
+#ifdef _WIN32
+    HANDLE process;
+    DWORD code = 0U;
+    int alive;
+
+    if (pid == 0ULL || pid > (unsigned long long)ULONG_MAX) return 0;
+    process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+        (DWORD)pid);
+    if (process == NULL) return 0;
+    alive = GetExitCodeProcess(process, &code) != 0 && code == STILL_ACTIVE;
+    CloseHandle(process);
+    return alive;
+#else
+    if (pid == 0ULL || pid > (unsigned long long)INT_MAX) return 0;
+    return kill((pid_t)pid, 0) == 0;
+#endif
 }

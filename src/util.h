@@ -179,6 +179,19 @@ void kc_mutex_unlock(kc_mutex_t *mutex);
  */
 char *kc_util_pid_path(void);
 
+/**
+ * Return the identifier of the current process.
+ * @return Process identifier.
+ */
+unsigned long long kc_util_process_id(void);
+
+/**
+ * Check whether one process identifier is running.
+ * @param pid Process identifier.
+ * @return 1 when running, 0 otherwise.
+ */
+int kc_util_pid_alive(unsigned long long pid);
+
 #ifdef __cplusplus
 }
 #endif
