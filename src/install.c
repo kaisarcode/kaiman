@@ -58,6 +58,7 @@ typedef struct {
     char *directory;
     char *registry;
     char *response;
+    char *installed_version;
     const char *blocked;
     atomic_int stop;
     atomic_int ready;
@@ -1020,6 +1021,10 @@ static int install_bridge(kc_wvw_t *wvw, const char *method,
     if (strcmp(method, "mode") == 0) {
         message = state->uninstall ? "uninstall" :
             state->update ? "update" : "install";
+    } else if (strcmp(method, "installedVersion") == 0) {
+        message = state->installed_version;
+    } else if (strcmp(method, "version") == 0) {
+        message = kc_kaiman_version();
     } else if (strcmp(method, "platform") == 0) {
 #ifdef _WIN32
         message = "windows";
@@ -1345,7 +1350,7 @@ done:
 int main(int argc, char **argv) {
     static const char *const methods[] = {"mode", "platform", "directory",
         "browse", "blocked", "install", "uninstall", "update", "close",
-        "ready"};
+        "ready", "installedVersion", "version"};
     kc_install_t state = {0};
     kc_wvw_options_t options = {0};
     kc_wvw_bridge_options_t bridge = {0};
@@ -1397,6 +1402,8 @@ int main(int argc, char **argv) {
             if (version != NULL &&
                 kc_update_newer(kc_kaiman_version(), version)) {
                 state.update = 1;
+                state.installed_version = version;
+                version = NULL;
             } else {
                 state.blocked = "Kaiman is already installed.";
             }
@@ -1496,6 +1503,7 @@ done:
         result = 1;
     }
     free(state.response);
+    free(state.installed_version);
     free(state.directory);
     free(state.registry);
     free(state.source);

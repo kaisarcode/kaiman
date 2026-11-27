@@ -162,6 +162,14 @@ async function run() {
             browse.hidden = true;
             directory.readOnly = true;
             button.textContent = "Update";
+            var version = document.getElementById("update-version");
+            var installedVersion = await window.NativeBridge.installedVersion();
+            var candidateVersion = await window.NativeBridge.version();
+
+            if (installedVersion && candidateVersion) {
+                version.textContent = installedVersion + " \u2192 " + candidateVersion;
+                version.hidden = false;
+            }
         }
         if (message) {
             blocked = true;

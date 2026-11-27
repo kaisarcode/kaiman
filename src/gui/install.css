@@ -91,6 +91,13 @@ body.installer {
     margin-top: var(--space-1);
 }
 
+#update-version {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    margin: 0;
+}
+
 #install-result {
     margin: 0;
     color: var(--error);
