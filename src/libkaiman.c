@@ -96,6 +96,7 @@ struct kc_kaiman_gateway {
     kc_kaiman_connection_t *connections;
     size_t connection_count;
     kc_mutex_t mutex;
+    kc_child_t *codex;
     volatile int stop;
     int mutex_ready;
     char *address;
@@ -1387,6 +1388,7 @@ static int json_rewrite(const kc_json_value_t *value, const char *model,
     char *piece = NULL;
     size_t index;
     int has_stream = 0;
+    int written = 0;
     int status = KC_KAIMAN_OK;
 
     if (out == NULL) return KC_KAIMAN_EINVAL;
@@ -1401,7 +1403,8 @@ static int json_rewrite(const kc_json_value_t *value, const char *model,
         index < kc_json_length(value); index++) {
         const char *key = kc_json_key(value, index);
         kc_json_value_t *item = kc_json_at(value, index);
-        if (index != 0U) status = kc_buffer_text(buffer, ",");
+        if (stream >= 0 && strcmp(key, "session") == 0) continue;
+        if (written++) status = kc_buffer_text(buffer, ",");
         if (status != KC_KAIMAN_OK) break;
         status = json_write_text(buffer, key);
         if (status != KC_KAIMAN_OK) break;
@@ -1425,8 +1428,8 @@ static int json_rewrite(const kc_json_value_t *value, const char *model,
         }
     }
     if (status == KC_KAIMAN_OK && stream >= 0 && !has_stream) {
-        status = kc_buffer_format(buffer, ",\"stream\":%s",
-            stream ? "true" : "false");
+        status = kc_buffer_format(buffer, "%s\"stream\":%s",
+            written ? "," : "", stream ? "true" : "false");
     }
     if (status == KC_KAIMAN_OK) status = kc_buffer_text(buffer, "}");
     if (status != KC_KAIMAN_OK) {
@@ -1788,6 +1791,51 @@ static int gateway_select(kc_kaiman_t *kaiman, const char *requested,
 }
 
 /**
+ * Identify the session facilities supported by an adapter.
+ * @param service Configured service.
+ * @return 1 for OpenCode, 2 for Codex, 3 for Console, or zero.
+ */
+static int session_type(const kc_kaiman_service_t *service) {
+    const char *adapter = service->adapter;
+
+    if (adapter == NULL) return 0;
+    if (strcmp(adapter, "opencode") == 0 ||
+        strcmp(adapter, "opencode-local") == 0) return 1;
+    if (strcmp(adapter, "codex-local") == 0) return 2;
+    if (strcmp(adapter, "opencode-cloud") == 0) return 3;
+    return 0;
+}
+
+/**
+ * Validate an opaque session identifier for use in paths and headers.
+ * @param id Candidate identifier.
+ * @return 1 when valid, otherwise zero.
+ */
+static int session_valid(const char *id) {
+    return id != NULL && *id != '\0' && strlen(id) < 256U &&
+        strspn(id, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            "0123456789_-") == strlen(id);
+}
+
+/**
+ * Resolve the provider prefix of an explicit session.
+ * @param service Selected service.
+ * @param value Namespaced session identifier.
+ * @return Borrowed upstream identifier, or NULL for a mismatch.
+ */
+static const char *session_raw(const kc_kaiman_service_t *service,
+    const char *value) {
+    const char *slash;
+
+    if (value == NULL) return NULL;
+    slash = strchr(value, '/');
+    if (slash == NULL || (size_t)(slash - value) != strlen(service->name) ||
+        strncmp(value, service->name, (size_t)(slash - value)) != 0 ||
+        !session_valid(slash + 1)) return NULL;
+    return slash + 1;
+}
+
+/**
  * Append the text of one JSON message content value.
  * @param buffer Destination buffer.
  * @param value Borrowed content value.
@@ -1879,7 +1927,10 @@ static int openai_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     const kc_json_value_t *root, const kc_kaiman_service_t *service,
     const char *model) {
     const char *requested = kc_json_text(kc_json_member(root, "model"));
-    kc_upstream_field_t fields[1];
+    const char *session = session_raw(service,
+        kc_json_text(kc_json_member(root, "session")));
+    kc_upstream_field_t fields[3];
+    size_t field_count = 0U;
     kc_upstream_request_t request;
     kc_upstream_response_t response;
     kc_kaiman_stream_t stream;
@@ -1913,13 +1964,23 @@ static int openai_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
         return gateway_failure(gateway, peer, 400, "invalid service URL");
     }
     memset(fields, 0, sizeof(fields));
-    fields[0].name = "Authorization";
-    fields[0].value = authorization;
+    if (authorization != NULL) {
+        fields[field_count].name = "Authorization";
+        fields[field_count++].value = authorization;
+    }
+    if (strcmp(service->adapter, "opencode-cloud") == 0) {
+        fields[field_count].name = "User-Agent";
+        fields[field_count++].value = "kaiman/" KC_KAIMAN_VERSION;
+        if (session != NULL) {
+            fields[field_count].name = "x-opencode-session";
+            fields[field_count++].value = session;
+        }
+    }
     memset(&request, 0, sizeof(request));
     request.method = "POST";
     request.url = url;
-    request.headers = authorization != NULL ? fields : NULL;
-    request.header_count = authorization != NULL ? 1U : 0U;
+    request.headers = fields;
+    request.header_count = field_count;
     request.body = body;
     request.body_size = strlen(body);
     request.timeout = kc_kaiman_service_timeout(service);
@@ -2390,14 +2451,15 @@ static int opencode_known(const char *known, const char *id) {
 /**
  * Collect fresh assistant text and completion state from OpenCode messages.
  * @param body Borrowed response body.
- * @param known Delimited known identifiers to update.
- * @param text Receives appended reply text.
+ * @param known Delimited identifiers from the initial snapshot.
+ * @param snapshot Whether to record existing message identifiers.
+ * @param text Receives fresh reply text.
  * @param done Receives completion state.
  * @param error Receives an owned error message.
  * @return KC_KAIMAN_OK or an error status.
  */
 static int opencode_collect(const char *body, kc_buffer_t *known,
-    kc_buffer_t *text, int *done, char **error) {
+    int snapshot, kc_buffer_t *text, int *done, char **error) {
     kc_json_value_t *root = NULL;
     kc_json_value_t *items;
     size_t index;
@@ -2414,6 +2476,11 @@ static int opencode_collect(const char *body, kc_buffer_t *known,
         kc_json_free(root);
         return KC_KAIMAN_EHTTP;
     }
+    if (!snapshot) {
+        text->size = 0U;
+        if (text->data != NULL) text->data[0] = '\0';
+        *done = 0;
+    }
     for (index = 0U; status == KC_KAIMAN_OK &&
         index < kc_json_length(items); index++) {
         kc_json_value_t *item = kc_json_item(items, index);
@@ -2421,8 +2488,8 @@ static int opencode_collect(const char *body, kc_buffer_t *known,
         const char *kind = kc_json_text(kc_json_member(item, "type"));
         if (kind == NULL) kind = kc_json_text(kc_json_member(item, "role"));
 
-        if (id != NULL && kind != NULL && strcmp(kind, "assistant") == 0 &&
-            !opencode_known(kc_buffer_value(known), id)) {
+        if (id == NULL || opencode_known(kc_buffer_value(known), id)) continue;
+        if (snapshot) {
             status = kc_buffer_text(known, "|");
             if (status == KC_KAIMAN_OK) {
                 status = kc_buffer_text(known, id);
@@ -2430,9 +2497,8 @@ static int opencode_collect(const char *body, kc_buffer_t *known,
             if (status == KC_KAIMAN_OK) {
                 status = kc_buffer_text(known, "|");
             }
-            if (status == KC_KAIMAN_OK) {
-                status = opencode_message_text(item, text);
-            }
+        } else if (kind != NULL && strcmp(kind, "assistant") == 0) {
+            status = opencode_message_text(item, text);
         } else if (kind != NULL && strcmp(kind, "idle") == 0) {
             const char *outcome = kc_json_text(kc_json_member(item,
                 "outcome"));
@@ -3303,6 +3369,64 @@ static int opencode_remote(const kc_kaiman_service_t *service,
 }
 
 /**
+ * Read the OpenCode server's active session map.
+ * @param service Managed HTTP service.
+ * @param out Receives owned JSON map.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int opencode_active(const kc_kaiman_service_t *service,
+    kc_json_value_t **out) {
+    kc_upstream_response_t response;
+    kc_json_value_t *root = NULL;
+    const kc_json_value_t *data;
+    char *json = NULL;
+    int status;
+
+    *out = NULL;
+    status = opencode_request(service, "GET", "/api/session/active", NULL,
+        &response);
+    if (status == KC_KAIMAN_OK && response.status != 200) {
+        status = KC_KAIMAN_EHTTP;
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = kc_json_parse(response.body, response.body_size, &root);
+    }
+    if (status == KC_KAIMAN_OK) {
+        data = kc_json_member(root, "data");
+        if (kc_json_type(data) != KC_JSON_OBJECT) {
+            status = KC_KAIMAN_EFORMAT;
+        } else {
+            status = kc_json_stringify(data, &json);
+            if (status == KC_KAIMAN_OK) {
+                status = kc_json_parse(json, strlen(json), out);
+            }
+        }
+    }
+    free(json);
+    kc_json_free(root);
+    kc_upstream_response_free(&response);
+    return status;
+}
+
+/**
+ * Check whether a session is available without interrupting another client.
+ * @param service Managed HTTP service.
+ * @param session Upstream session identifier.
+ * @return KC_KAIMAN_OK, KC_KAIMAN_EBUSY, or an error status.
+ */
+static int opencode_idle(const kc_kaiman_service_t *service,
+    const char *session) {
+    kc_json_value_t *active = NULL;
+    int status = opencode_active(service, &active);
+
+    if (status == KC_KAIMAN_OK && kc_json_member(active, session) != NULL) {
+        status = KC_KAIMAN_EBUSY;
+    }
+    kc_json_free(active);
+    return status;
+}
+
+/**
  * Forward one chat request through an OpenCode server.
  * @param gateway Open gateway.
  * @param peer Borrowed client peer.
@@ -3315,6 +3439,8 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     const kc_json_value_t *root, const kc_kaiman_service_t *service,
     const char *model) {
     const char *requested = kc_json_text(kc_json_member(root, "model"));
+    const char *selected = session_raw(service,
+        kc_json_text(kc_json_member(root, "session")));
     kc_upstream_response_t response;
     kc_kaiman_message_t messages[KAIMAN_MAX_HISTORY];
     kc_kaiman_stream_t stream;
@@ -3346,7 +3472,7 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     memset(messages, 0, sizeof(messages));
     memset(&stream, 0, sizeof(stream));
     kc_mutex_lock(&gateway->mutex);
-    if (!opencode_local(kc_kaiman_service_url(service))) {
+    if (selected == NULL && !opencode_local(kc_kaiman_service_url(service))) {
         status = request_prompt(root, &text);
         if (status == KC_KAIMAN_OK) status = kc_buffer_open(&reply);
         if (status == KC_KAIMAN_OK) {
@@ -3357,10 +3483,17 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
         goto respond;
     }
     status = KC_KAIMAN_OK;
-    state_path = opencode_session_path(service);
-    if (state_path == NULL) status = KC_KAIMAN_ENOMEM;
-    if (status == KC_KAIMAN_OK) {
-        status = opencode_ensure_session(service, state_path, model, &session);
+    if (selected != NULL) {
+        session = kc_util_strdup(selected);
+        status = session != NULL ? opencode_idle(service, session) :
+            KC_KAIMAN_ENOMEM;
+    } else {
+        state_path = opencode_session_path(service);
+        if (state_path == NULL) status = KC_KAIMAN_ENOMEM;
+        if (status == KC_KAIMAN_OK) {
+            status = opencode_ensure_session(service, state_path, model,
+                &session);
+        }
     }
     if (status == KC_KAIMAN_OK) {
         status = opencode_switch(service, session, model);
@@ -3392,12 +3525,8 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
                 rc = KC_KAIMAN_EHTTP;
             }
             if (rc == KC_KAIMAN_OK) {
-                (void)opencode_collect(response.body, known, before_text,
-                    &done, &failure);
-                kc_kaiman_free(failure);
-                failure = NULL;
-                done = 0;
-                status = KC_KAIMAN_OK;
+                status = opencode_collect(response.body, known, 1,
+                    before_text, &done, &failure);
             } else {
                 status = rc;
             }
@@ -3482,7 +3611,7 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
                     kc_upstream_response_free(&response);
                     break;
                 }
-                status = opencode_collect(response.body, known, reply,
+                status = opencode_collect(response.body, known, 0, reply,
                     &done, &failure);
                 kc_upstream_response_free(&response);
                 if (status != KC_KAIMAN_OK || done) break;
@@ -3495,6 +3624,7 @@ static int opencode_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     }
     free(path);
     path = NULL;
+    if (state_path == NULL) goto respond;
     if (status == KC_KAIMAN_OK) {
         status = opencode_state_load(state_path, &state_id, messages, &count);
     }
@@ -3528,8 +3658,9 @@ respond:
     kc_mutex_unlock(&gateway->mutex);
 
     if (status != KC_KAIMAN_OK) {
-        gateway_failure(gateway, peer, 502,
-            failure != NULL ? failure : kc_kaiman_strerror(status));
+        gateway_failure(gateway, peer, status == KC_KAIMAN_EBUSY ? 409 : 502,
+            status == KC_KAIMAN_EBUSY ? "session is active" :
+                (failure != NULL ? failure : kc_kaiman_strerror(status)));
     } else if (stream_mode) {
         char *chunk = completion_json("", "",
             1);
@@ -3731,6 +3862,27 @@ static int codex_open(kc_child_t **out, double deadline) {
 }
 
 /**
+ * Obtain the app-server owned by the gateway for persistent sessions.
+ * @param gateway Open gateway with its mutex held.
+ * @param deadline Monotonic deadline.
+ * @return KC_KAIMAN_OK or an error status.
+ */
+static int codex_connect(kc_kaiman_gateway_t *gateway, double deadline) {
+    if (gateway->codex != NULL) return KC_KAIMAN_OK;
+    return codex_open(&gateway->codex, deadline);
+}
+
+/**
+ * Release the gateway's app-server after a transport error.
+ * @param gateway Open gateway with its mutex held.
+ * @return void
+ */
+static void codex_disconnect(kc_kaiman_gateway_t *gateway) {
+    kc_child_close(gateway->codex);
+    gateway->codex = NULL;
+}
+
+/**
  * Convert a text-only chat request to the prompt consumed by Codex.
  * @param root Borrowed Chat Completions request.
  * @param prompt Destination prompt buffer.
@@ -3823,15 +3975,18 @@ static int codex_reply(kc_child_t *child, const char *thread, const char *turn,
 }
 
 /**
- * Run a single ephemeral Codex turn using the selected model.
+ * Run one Codex turn in a new or explicitly selected thread.
+ * @param gateway Open gateway.
  * @param service Configured local Codex service.
  * @param model Requested model.
+ * @param session Upstream thread identifier, or NULL for an ephemeral turn.
  * @param prompt Text prompt.
  * @param reply Destination reply.
  * @return KC_KAIMAN_OK or an error status.
  */
-static int codex_generate(const kc_kaiman_service_t *service,
-    const char *model, const char *prompt, kc_buffer_t *reply) {
+static int codex_generate(kc_kaiman_gateway_t *gateway,
+    const kc_kaiman_service_t *service, const char *model,
+    const char *session, const char *prompt, kc_buffer_t *reply) {
     kc_child_t *child = NULL;
     kc_buffer_t *params = NULL;
     kc_json_value_t *response = NULL;
@@ -3842,20 +3997,42 @@ static int codex_generate(const kc_kaiman_service_t *service,
         (double)kc_kaiman_service_timeout(service);
     int status;
 
-    status = codex_open(&child, deadline);
+    if (session != NULL) {
+        kc_mutex_lock(&gateway->mutex);
+        status = codex_connect(gateway, deadline);
+        child = gateway->codex;
+    } else {
+        status = codex_open(&child, deadline);
+    }
     if (status == KC_KAIMAN_OK) status = kc_buffer_open(&params);
     if (status == KC_KAIMAN_OK) {
         status = kc_buffer_text(params, "{\"model\":");
     }
     if (status == KC_KAIMAN_OK) status = json_write_text(params, model);
-    if (status == KC_KAIMAN_OK) {
-        status = kc_buffer_text(params,
-            ",\"ephemeral\":true,\"approvalPolicy\":\"never\","
-            "\"sandbox\":\"read-only\"}");
+    if (status == KC_KAIMAN_OK && session != NULL) {
+        status = kc_buffer_text(params, ",\"threadId\":");
+        if (status == KC_KAIMAN_OK) status = json_write_text(params, session);
+        if (status == KC_KAIMAN_OK) {
+            status = kc_buffer_text(params, ",\"excludeTurns\":true");
+        }
+    } else if (status == KC_KAIMAN_OK) {
+        status = kc_buffer_text(params, ",\"ephemeral\":true");
     }
     if (status == KC_KAIMAN_OK) {
-        status = codex_rpc(child, 3U, "thread/start", kc_buffer_value(params),
+        status = kc_buffer_text(params,
+            ",\"approvalPolicy\":\"never\",\"sandbox\":\"read-only\"}");
+    }
+    if (status == KC_KAIMAN_OK) {
+        status = codex_rpc(child, 3U, session != NULL ?
+            "thread/resume" : "thread/start", kc_buffer_value(params),
             deadline, &response);
+    }
+    if (status == KC_KAIMAN_OK && session != NULL) {
+        const kc_json_value_t *info = kc_json_member(
+            kc_json_member(response, "result"), "thread");
+
+        if (native_equals(kc_json_member(kc_json_member(info, "status"),
+            "type"), "active")) status = KC_KAIMAN_EBUSY;
     }
     if (status == KC_KAIMAN_OK) {
         id = kc_json_text(kc_json_member(kc_json_member(
@@ -3893,7 +4070,14 @@ static int codex_generate(const kc_kaiman_service_t *service,
     }
     kc_json_free(response);
     kc_buffer_close(params);
-    kc_child_close(child);
+    if (session != NULL) {
+        if (status != KC_KAIMAN_OK && status != KC_KAIMAN_EBUSY) {
+            codex_disconnect(gateway);
+        }
+        kc_mutex_unlock(&gateway->mutex);
+    } else {
+        kc_child_close(child);
+    }
     free(thread);
     free(turn);
     return status;
@@ -3930,11 +4114,15 @@ static int codex_chat(kc_kaiman_gateway_t *gateway, kc_netl_peer_t *peer,
     }
     status = kc_buffer_open(&reply);
     if (status == KC_KAIMAN_OK) {
-        status = codex_generate(service, model, kc_buffer_value(prompt), reply);
+        status = codex_generate(gateway, service, model,
+            session_raw(service, kc_json_text(kc_json_member(root, "session"))),
+            kc_buffer_value(prompt), reply);
     }
     if (status != KC_KAIMAN_OK) {
-        status = gateway_failure(gateway, peer, 502,
-            "Codex local inference failed; check the installation and login");
+        status = gateway_failure(gateway, peer,
+            status == KC_KAIMAN_EBUSY ? 409 : 502,
+            status == KC_KAIMAN_EBUSY ? "session is active" :
+                "Codex local inference failed; check the installation and login");
         goto done;
     }
     text = native_completion(kc_buffer_value(reply), requested,
@@ -4742,6 +4930,12 @@ static void gateway_request(const kc_http_request_t *request, void *userdata) {
                 KC_KAIMAN_OK || service->adapter == NULL) {
                 (void)gateway_failure(gateway, connection->peer, 404,
                     "unknown model; use a service/model identifier");
+            } else if (kc_json_member(root, "session") != NULL &&
+                (session_type(service) == 0 ||
+                    session_raw(service, kc_json_text(
+                        kc_json_member(root, "session"))) == NULL)) {
+                (void)gateway_failure(gateway, connection->peer, 400,
+                    "invalid or unsupported session for selected provider");
             } else if (strcmp(service->adapter, "opencode-local") == 0) {
                 (void)opencode_auto_chat(gateway, connection->peer, root,
                     service, model);
@@ -4934,6 +5128,7 @@ void kc_kaiman_gateway_close(kc_kaiman_gateway_t *gateway) {
         kc_buffer_close(gateway->connections[index].body);
     }
     free(gateway->connections);
+    codex_disconnect(gateway);
     if (gateway->mutex_ready) kc_mutex_close(&gateway->mutex);
     free(gateway->address);
     free(gateway->error);
