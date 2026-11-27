@@ -708,7 +708,6 @@ async function refresh() {
         "state state-stopped";
     state.title = result.status || "";
     byId("gateway-address").textContent = result.address || "";
-    byId("config-path").textContent = result.path || "";
     byId("version").textContent = result.version || "";
     setValue(byId("listen"), result.address);
     renderApi(true);
