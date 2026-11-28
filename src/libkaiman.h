@@ -178,6 +178,18 @@ const char *kc_kaiman_service_get(const kc_kaiman_service_t *service,
     const char *key);
 
 /**
+ * Borrow the effective value of one textual service field.
+ * Unset fields resolve to the value applied by the gateway: the service name
+ * for display-name, the adapter default URL for url, and "none" for absent
+ * credential sources. Local adapters report "auto" or "local".
+ * @param service Managed service.
+ * @param key Field name accepted by kc_kaiman_service_get().
+ * @return Borrowed effective value, or NULL for an unknown key.
+ */
+const char *kc_kaiman_service_effective(const kc_kaiman_service_t *service,
+    const char *key);
+
+/**
  * Return the default base URL for a supported adapter.
  * @param adapter Adapter identifier.
  * @return Borrowed default URL, or NULL for an unknown adapter.

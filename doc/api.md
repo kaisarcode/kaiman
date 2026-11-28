@@ -6,8 +6,9 @@ Include `src/libkaiman.h` and link `libkaiman`.
     configuration lifetime.
 - `kc_kaiman_get_services()`, `kc_kaiman_get_service()`,
     `kc_kaiman_add_service()`, `kc_kaiman_service_set()`,
-    `kc_kaiman_service_get()`, `kc_kaiman_service_timeout()` and
-    `kc_kaiman_service_remove()` manage saved services.
+    `kc_kaiman_service_get()`, `kc_kaiman_service_effective()`,
+    `kc_kaiman_service_timeout()` and `kc_kaiman_service_remove()` manage saved
+    services.
 - `kc_kaiman_listen()`, `kc_kaiman_address()` and `kc_kaiman_path()` inspect or
     change gateway settings.
 - `kc_kaiman_gateway_open()`, `kc_kaiman_gateway_run()`,
@@ -38,6 +39,10 @@ URL. The `url` field contains only the explicit override. The GUI displays the
 default as a placeholder. Clearing an override restores the adapter default.
 Local subprocess adapters have no static default URL. For automatic local
 connections, URL resolution happens at request time.
+`kc_kaiman_service_effective()` returns the value applied by the gateway without
+writing it to the configuration: the service name for an unset `display-name`,
+the adapter default URL for an empty `url`, `auto` or `local` for local adapters,
+and `none` for unused credential sources. It never returns a secret.
 
 For HTTP clients, see the [HTTP API](http-api.md).
 

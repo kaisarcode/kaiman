@@ -594,6 +594,15 @@ static int checks(const char *path) {
         fprintf(stderr, "default URL resolution failed\n");
         result = 1;
     }
+    if (strcmp(kc_kaiman_service_effective(service, "url"),
+            "http://127.0.0.1:4096") != 0 ||
+        strcmp(kc_kaiman_service_effective(service, "display-name"),
+            "local-opencode") != 0 ||
+        strcmp(kc_kaiman_service_effective(service, "keyring"), "none") != 0 ||
+        kc_kaiman_service_effective(service, "unknown") != NULL) {
+        fprintf(stderr, "effective value resolution failed\n");
+        result = 1;
+    }
     status = kc_kaiman_service_set(service, "url", "http://127.0.0.1:49375");
     if (status != KC_KAIMAN_OK || strcmp(kc_kaiman_service_get(service,
         "url"), "http://127.0.0.1:49375") != 0 ||
@@ -604,8 +613,10 @@ static int checks(const char *path) {
     if (kc_kaiman_service_set(service, "url", "") != KC_KAIMAN_OK ||
         kc_kaiman_service_set(service, "adapter", "opencode-local") !=
             KC_KAIMAN_OK || kc_kaiman_service_url(service) != NULL ||
+        strcmp(kc_kaiman_service_effective(service, "url"), "auto") != 0 ||
         kc_kaiman_service_set(service, "adapter", "codex-local") !=
             KC_KAIMAN_OK || kc_kaiman_service_url(service) != NULL ||
+        strcmp(kc_kaiman_service_effective(service, "url"), "local") != 0 ||
         kc_kaiman_service_set(service, "adapter", "opencode") != KC_KAIMAN_OK ||
         kc_kaiman_service_set(service, "url", "http://127.0.0.1:49375") !=
             KC_KAIMAN_OK) {
@@ -1312,8 +1323,18 @@ static int test_cli_run(char *const arguments[], int *exit_code,
     }
 #endif
     if (ok) {
+        char *cursor;
+        char *write;
         *output = test_read_text(TEST_CLI_OUTPUT, NULL);
         if (*output == NULL) ok = 0;
+        else {
+            write = *output;
+            for (cursor = *output; *cursor != '\0'; cursor++) {
+                if (*cursor == '\r' && cursor[1] == '\n') continue;
+                *write++ = *cursor;
+            }
+            *write = '\0';
+        }
     }
     return ok;
 }
@@ -1449,6 +1470,52 @@ static int cli_commands(void) {
         }
     }
     {
+        char *arguments[] = { TEST_CLI, "list", NULL };
+        if (!test_cli_check(arguments, 0,
+            "  display-name: demo\n  adapter: openai\n"
+            "  url: http://127.0.0.1:49374\n"
+            "  env: none\n  token-command: none\n"
+            "  scheme: none\n  user: none\n  timeout: 5\n", NULL)) {
+            fprintf(stderr, "CLI effective defaults failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "add", "defaults",
+            "adapter=opencode-local", NULL };
+        if (!test_cli_check(arguments, 0, NULL, NULL)) {
+            fprintf(stderr, "CLI defaults add failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "list", NULL };
+        if (!test_cli_check(arguments, 0,
+            "  display-name: defaults\n  adapter: opencode-local\n"
+            "  url: auto\n  env: none\n  token-command: none\n"
+            "  scheme: none\n  user: none\n  timeout: 60\n", NULL)) {
+            fprintf(stderr, "CLI local adapter defaults failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "add", "remote", "adapter=openai",
+            NULL };
+        if (!test_cli_check(arguments, 0, NULL, NULL)) {
+            fprintf(stderr, "CLI remote defaults add failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "list", NULL };
+        if (!test_cli_check(arguments, 0,
+            "  display-name: remote\n  adapter: openai\n"
+            "  url: https://api.openai.com/v1\n", NULL)) {
+            fprintf(stderr, "CLI default URL failed\n");
+            goto done;
+        }
+    }
+    {
         char *arguments[] = { TEST_CLI, "edit", "demo",
             "url=http://127.0.0.1:49375", NULL };
         if (!test_cli_check(arguments, 0, NULL, NULL)) {
@@ -1501,6 +1568,93 @@ static int cli_commands(void) {
         char *arguments[] = { TEST_CLI, "status", NULL };
         if (!test_cli_check(arguments, 0, "stopped", NULL)) {
             fprintf(stderr, "CLI stopped status failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "config", NULL };
+        if (!test_cli_check(arguments, 0, "address: 127.0.0.1:49383", NULL)) {
+            fprintf(stderr, "CLI config failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "conf", NULL };
+        if (!test_cli_check(arguments, 0,
+            "path: kaiman-test-config/kaiman/services.ini", "env:")) {
+            fprintf(stderr, "CLI conf failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "set", "address=127.0.0.1:49384",
+            NULL };
+        if (!test_cli_check(arguments, 0, "address: 127.0.0.1:49384", NULL)) {
+            fprintf(stderr, "CLI set address failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "config", NULL };
+        if (!test_cli_check(arguments, 0, "address: 127.0.0.1:49384", NULL)) {
+            fprintf(stderr, "CLI set address persistence failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "set", "address=0.0.0.0", NULL };
+        if (!test_cli_check(arguments, 0, "address: 0.0.0.0:49384", NULL)) {
+            fprintf(stderr, "CLI set address host failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "config", NULL };
+        if (!test_cli_check(arguments, 0, "address: 0.0.0.0:49384", NULL)) {
+            fprintf(stderr, "CLI set host address persistence failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "set", "port=1234", NULL };
+        if (!test_cli_check(arguments, 0, "address: 0.0.0.0:1234", NULL)) {
+            fprintf(stderr, "CLI set port failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "config", NULL };
+        if (!test_cli_check(arguments, 0, "address: 0.0.0.0:1234", NULL)) {
+            fprintf(stderr, "CLI set port persistence failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "set", "address=127.0.0.1:0", NULL };
+        if (!test_cli_check(arguments, 1, NULL, NULL)) {
+            fprintf(stderr, "CLI invalid set address succeeded\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "set", "port=0", NULL };
+        if (!test_cli_check(arguments, 1, NULL, NULL)) {
+            fprintf(stderr, "CLI invalid set port succeeded\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "set", "bogus=1", NULL };
+        if (!test_cli_check(arguments, 1, NULL, NULL)) {
+            fprintf(stderr, "CLI unknown setting succeeded\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "set", "address=127.0.0.1:49383",
+            NULL };
+        if (!test_cli_check(arguments, 0, NULL, NULL)) {
+            fprintf(stderr, "CLI set restore failed\n");
             goto done;
         }
     }

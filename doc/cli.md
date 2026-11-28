@@ -12,6 +12,10 @@ kaiman list
 kaiman edit local-opencode timeout=120
 kaiman remove local-opencode
 
+kaiman conf
+kaiman set address=0.0.0.0
+kaiman set address=127.0.0.1:49380
+kaiman set port=1234
 kaiman start
 kaiman status
 kaiman stop
@@ -21,11 +25,20 @@ kaiman gui
 `add` and `edit` accept the service keys `display-name`, `adapter`, `url`,
 `env`, `token-command`, `scheme`, `user` and `timeout`. New services default to
 `scheme=none`; supply `scheme=bearer` or `scheme=basic` when a credential is
-used. `start` launches the gateway as a detached process, `status` prints its
-state and address, and `stop` terminates it. `gui` opens a native WebView
-manager backed by the same public library API. The manager lists services and
-provides add, edit, remove, start,
-stop, status and listen-address controls. It is available only in builds with
+used. `list` prints the effective value of every public field, even when the
+saved section omits it: the service name for `display-name`, the adapter default
+for `url`, `auto` or `local` for local adapters, and `none` for unused
+credential sources. `conf` (or `config`) lists public gateway values as
+`key: value`, including the address and configuration path; it never prints
+credentials.
+`set` accepts `key=value` pairs. The `address` key changes the host or the full
+`host:port`; a host without a port keeps the saved port. The `port` key changes
+only the port and keeps the host. Neither command starts the gateway. `start`
+launches it as a detached process, `status` prints its state and address, and
+`stop` terminates it. `gui` opens a native WebView manager backed by the same
+public library API.
+The manager lists services and provides add, edit, remove, start, stop, status
+and listen-address controls. It is available only in builds with
 `libwvw`; elsewhere the command reports that the GUI is unavailable and exits
 with status 1. On Windows, libwvw uses
 `$XDG_DATA_HOME/webview2-runtime/msedgewebview2.exe` when present, or

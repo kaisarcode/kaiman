@@ -30,6 +30,9 @@ static void usage(void) {
     printf("  edit NAME [key=value ...]       Edit a configured service\n");
     printf("  remove NAME                     Remove a configured service\n");
     printf("  list                            List configured services\n");
+    printf("  conf                            Show public gateway configuration\n");
+    printf("  config                          Alias for conf\n");
+    printf("  set KEY=VALUE [KEY=VALUE ...]   Change saved gateway configuration\n");
     printf("  start                           Start the gateway process\n");
     printf("  stop                            Stop the gateway process\n");
     printf("  status                          Show gateway process status\n");
@@ -62,20 +65,16 @@ static void report_error(const kc_kaiman_t *kaiman, int status) {
  * @return void
  */
 static void print_service(const kc_kaiman_service_t *service) {
-    const char *display = kc_kaiman_service_get(service, "display-name");
-
-    printf("%s\n", kc_kaiman_service_get(service, "name"));
-    if (display != NULL && *display != '\0') {
-        printf("  display-name: %s\n", display);
-    }
-    printf("  adapter: %s\n", kc_kaiman_service_get(service, "adapter"));
-    printf("  url: %s\n", kc_kaiman_service_url(service) != NULL ?
-        kc_kaiman_service_url(service) : "");
-    printf("  env: %s\n", kc_kaiman_service_get(service, "env"));
+    printf("%s\n", kc_kaiman_service_effective(service, "name"));
+    printf("  display-name: %s\n",
+        kc_kaiman_service_effective(service, "display-name"));
+    printf("  adapter: %s\n", kc_kaiman_service_effective(service, "adapter"));
+    printf("  url: %s\n", kc_kaiman_service_effective(service, "url"));
+    printf("  env: %s\n", kc_kaiman_service_effective(service, "env"));
     printf("  token-command: %s\n",
-        kc_kaiman_service_get(service, "token-command"));
-    printf("  scheme: %s\n", kc_kaiman_service_get(service, "scheme"));
-    printf("  user: %s\n", kc_kaiman_service_get(service, "user"));
+        kc_kaiman_service_effective(service, "token-command"));
+    printf("  scheme: %s\n", kc_kaiman_service_effective(service, "scheme"));
+    printf("  user: %s\n", kc_kaiman_service_effective(service, "user"));
     printf("  timeout: %d\n", kc_kaiman_service_timeout(service));
 }
 
@@ -254,6 +253,153 @@ done:
 }
 
 /**
+ * Show the saved gateway configuration.
+ * @return 0 on success, 1 on failure.
+ */
+static int config_command(void) {
+    kc_kaiman_t *kaiman = NULL;
+    int status;
+
+    status = kc_kaiman_open(&kaiman, NULL);
+    if (status != KC_KAIMAN_OK) {
+        report_error(NULL, status);
+        return 1;
+    }
+    printf("address: %s\n", kc_kaiman_address(kaiman));
+    printf("path: %s\n", kc_kaiman_path(kaiman));
+    kc_kaiman_close(kaiman);
+    return 0;
+}
+
+/**
+ * Resolve one CLI address value against the saved address.
+ * @param kaiman Open manager with the current address.
+ * @param value Address supplied by the user.
+ * @return Owned address, or NULL on invalid input or allocation failure.
+ */
+static char *resolve_address(const kc_kaiman_t *kaiman, const char *value) {
+    const char *current;
+    const char *port;
+    size_t length;
+    char *resolved;
+
+    if (value == NULL || *value == '\0') return NULL;
+    if (strchr(value, ':') != NULL) {
+        length = strlen(value) + 1U;
+        resolved = (char *)malloc(length);
+        if (resolved == NULL) return NULL;
+        memcpy(resolved, value, length);
+        return resolved;
+    }
+    current = kc_kaiman_address(kaiman);
+    if (current == NULL) return NULL;
+    port = strrchr(current, ':');
+    if (port == NULL) return NULL;
+    length = strlen(value) + strlen(port) + 1U;
+    resolved = (char *)malloc(length);
+    if (resolved == NULL) return NULL;
+    snprintf(resolved, length, "%s%s", value, port);
+    return resolved;
+}
+
+/**
+ * Resolve one CLI port value against the saved address.
+ * @param kaiman Open manager with the current address.
+ * @param value Port supplied by the user.
+ * @return Owned address, or NULL on invalid input or allocation failure.
+ */
+static char *resolve_port(const kc_kaiman_t *kaiman, const char *value) {
+    const char *current;
+    const char *separator;
+    char *end;
+    size_t host_length;
+    size_t length;
+    long port;
+    char *resolved;
+
+    if (value == NULL || *value == '\0') return NULL;
+    port = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || port < 1 || port > 65535) {
+        return NULL;
+    }
+    current = kc_kaiman_address(kaiman);
+    if (current == NULL) return NULL;
+    separator = strrchr(current, ':');
+    if (separator == NULL || separator == current) return NULL;
+    host_length = (size_t)(separator - current);
+    length = strlen(current) + 8U;
+    resolved = (char *)malloc(length);
+    if (resolved == NULL) return NULL;
+    memcpy(resolved, current, host_length);
+    resolved[host_length] = ':';
+    snprintf(resolved + host_length + 1U, length - host_length - 1U, "%ld",
+        port);
+    return resolved;
+}
+
+/**
+ * Apply key=value changes to the saved gateway configuration.
+ * @param arguments Arguments after the command.
+ * @param count Number of arguments.
+ * @return 0 on success, 1 on failure.
+ */
+static int set_command(char **arguments, int count) {
+    kc_kaiman_t *kaiman = NULL;
+    char *resolved = NULL;
+    char *separator;
+    int index;
+    int status;
+    int result = 1;
+
+    if (count < 1) {
+        usage();
+        return 1;
+    }
+    status = kc_kaiman_open(&kaiman, NULL);
+    if (status != KC_KAIMAN_OK) {
+        report_error(NULL, status);
+        return 1;
+    }
+    for (index = 0; index < count; index++) {
+        separator = strchr(arguments[index], '=');
+        if (separator == NULL) {
+            fprintf(stderr, "kaiman: expected key=value: %s\n",
+                arguments[index]);
+            goto done;
+        }
+        *separator = '\0';
+        free(resolved);
+        resolved = NULL;
+        if (strcmp(arguments[index], "address") == 0) {
+            resolved = resolve_address(kaiman, separator + 1);
+        } else if (strcmp(arguments[index], "port") == 0) {
+            resolved = resolve_port(kaiman, separator + 1);
+        } else {
+            fprintf(stderr, "kaiman: unknown setting: %s\n",
+                arguments[index]);
+            goto done;
+        }
+        if (resolved == NULL) {
+            fprintf(stderr, "kaiman: invalid value for %s\n",
+                arguments[index]);
+            goto done;
+        }
+        status = kc_kaiman_listen(kaiman, resolved);
+        if (status != KC_KAIMAN_OK) {
+            report_error(kaiman, status);
+            goto done;
+        }
+    }
+    printf("address: %s\n", kc_kaiman_address(kaiman));
+    result = 0;
+
+done:
+    free(resolved);
+    kc_kaiman_close(kaiman);
+    return result;
+}
+
+/**
  * Run the gateway in the foreground.
  * @return 0 on success, 1 on failure.
  */
@@ -326,6 +472,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(argv[1], "list") == 0 && argc == 2) {
         return list_command();
+    }
+    if ((strcmp(argv[1], "conf") == 0 || strcmp(argv[1], "config") == 0) &&
+        argc == 2) {
+        return config_command();
+    }
+    if (strcmp(argv[1], "set") == 0) {
+        return set_command(argv + 2, argc - 2);
     }
     if (strcmp(argv[1], "start") == 0 && argc == 2) {
         status = kc_kaiman_start(NULL);

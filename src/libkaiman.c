@@ -1191,6 +1191,58 @@ const char *kc_kaiman_service_get(const kc_kaiman_service_t *service,
 }
 
 /**
+ * Resolve the effective URL label of a configured service.
+ * @param service Managed service.
+ * @return Borrowed URL, local adapter label, or "none".
+ */
+static const char *effective_url(const kc_kaiman_service_t *service) {
+    const char *url = kc_kaiman_service_url(service);
+
+    if (url != NULL) return url;
+    if (service == NULL) return "none";
+    if (service->adapter != NULL &&
+        strcmp(service->adapter, "opencode-local") == 0) return "auto";
+    if (service->adapter != NULL &&
+        strcmp(service->adapter, "codex-local") == 0) return "local";
+    return "none";
+}
+
+/**
+ * Borrow the effective value of one textual service field.
+ * @param service Managed service.
+ * @param key Field name accepted by kc_kaiman_service_get().
+ * @return Borrowed effective value, or NULL for an unknown key.
+ */
+const char *kc_kaiman_service_effective(const kc_kaiman_service_t *service,
+    const char *key) {
+    const char *value;
+
+    if (key == NULL) return NULL;
+    if (strcmp(key, "name") == 0) {
+        return service_valid(service) ? service->name : "none";
+    }
+    if (strcmp(key, "display-name") == 0 ||
+        strcmp(key, "display_name") == 0) {
+        value = kc_kaiman_service_get(service, "display-name");
+        if (value != NULL && *value != '\0') return value;
+        return service_valid(service) ? service->name : "none";
+    }
+    if (strcmp(key, "url") == 0 || strcmp(key, "base_url") == 0) {
+        return effective_url(service);
+    }
+    if (strcmp(key, "adapter") != 0 && strcmp(key, "keyring") != 0 &&
+        strcmp(key, "env") != 0 && strcmp(key, "api_key_env") != 0 &&
+        strcmp(key, "token-command") != 0 &&
+        strcmp(key, "token_command") != 0 &&
+        strcmp(key, "scheme") != 0 && strcmp(key, "auth_scheme") != 0 &&
+        strcmp(key, "user") != 0 && strcmp(key, "auth_user") != 0) {
+        return NULL;
+    }
+    value = kc_kaiman_service_get(service, key);
+    return value != NULL && *value != '\0' ? value : "none";
+}
+
+/**
  * Resolve the effective base URL of a configured service.
  * @param service Managed service.
  * @return Borrowed explicit or default URL, or NULL when unavailable.
