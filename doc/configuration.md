@@ -9,6 +9,7 @@ contains only a credential reference. If secure storage is unavailable, saving
 a new credential fails. Existing environment and command sources remain usable
 through the library and CLI. Editing a service without entering a new secret
 preserves its existing credential when the authentication scheme is unchanged.
+New services use `scheme=none` until a credential scheme is selected explicitly.
 
 ```ini
 [gateway]

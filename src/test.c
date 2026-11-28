@@ -1428,8 +1428,7 @@ static int cli_commands(void) {
     }
     {
         char *arguments[] = { TEST_CLI, "add", "demo", "adapter=openai",
-            "url=http://127.0.0.1:49374",
-            "scheme=none", "timeout=5", NULL };
+            "url=http://127.0.0.1:49374", "timeout=5", NULL };
         if (!test_cli_check(arguments, 0, NULL, NULL)) {
             fprintf(stderr, "CLI add failed\n");
             goto done;
@@ -1439,6 +1438,13 @@ static int cli_commands(void) {
         char *arguments[] = { TEST_CLI, "list", NULL };
         if (!test_cli_check(arguments, 0, "demo", NULL)) {
             fprintf(stderr, "CLI list failed\n");
+            goto done;
+        }
+    }
+    {
+        char *arguments[] = { TEST_CLI, "list", NULL };
+        if (!test_cli_check(arguments, 0, "scheme: none", NULL)) {
+            fprintf(stderr, "CLI default scheme failed\n");
             goto done;
         }
     }

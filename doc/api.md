@@ -24,12 +24,13 @@ borrowed. A removed service handle stays allocated but becomes invalid.
 
 A service descriptor accepts a unique `name`, an `adapter` (see the adapter
 [provider list](providers.md)), an optional `http://` or `https://` URL override,
-an optional credential reference (`env` or `token-command`), an `auth` scheme
-(`none`, `bearer` or `basic`), an optional `user`, and a `timeout` from 1 to 600
-seconds. A service also accepts an optional human readable `display-name`, which
-is set and read through `kc_kaiman_service_set()` and
-`kc_kaiman_service_get()`. Direct credentials are stored separately in the
-system credential store using `kc_kaiman_service_authenticate`.
+an optional credential reference (`env` or `token-command`), an `auth_scheme`
+(`none`, `bearer` or `basic`, defaulting to `none`), an optional `user`, and a
+`timeout` from 1 to 600 seconds. A service also accepts an optional human
+readable `display-name`, which is set and read through
+`kc_kaiman_service_set()` and `kc_kaiman_service_get()`. Direct credentials are
+stored separately in the system credential store using
+`kc_kaiman_service_authenticate`.
 
 An omitted or empty URL selects the adapter default. `kc_kaiman_default_url()`
 returns that default; `kc_kaiman_service_url()` resolves the effective service

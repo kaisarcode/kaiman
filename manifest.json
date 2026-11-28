@@ -1,6 +1,6 @@
 {
   "name": "kaiman",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Unified AI service manager and gateway with persistent sessions",
   "author": "KaisarCode",
   "license": "LGPL-3.0-only",

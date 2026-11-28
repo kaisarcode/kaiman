@@ -431,7 +431,7 @@ static kc_kaiman_service_t *service_new(kc_kaiman_t *kaiman,
     service->owner = kaiman;
     service->alive = 1;
     service->name = copy_text(name);
-    service->auth_scheme = copy_text("bearer");
+    service->auth_scheme = copy_text("none");
     service->timeout = DEFAULT_TIMEOUT;
     if (service->name == NULL || service->auth_scheme == NULL) {
         service_fields_clear(service);
@@ -507,7 +507,7 @@ static int persist(kc_kaiman_t *kaiman) {
         fprintf(file, "token-command=%s\n",
             service->token_command != NULL ? service->token_command : "");
         fprintf(file, "scheme=%s\n",
-            service->auth_scheme != NULL ? service->auth_scheme : "bearer");
+            service->auth_scheme != NULL ? service->auth_scheme : "none");
         fprintf(file, "user=%s\n",
             service->auth_user != NULL ? service->auth_user : "");
         if (service->keyring != NULL && *service->keyring != '\0') {

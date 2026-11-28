@@ -19,10 +19,12 @@ kaiman gui
 ```
 
 `add` and `edit` accept the service keys `display-name`, `adapter`, `url`,
-`env`, `token-command`, `scheme`, `user` and `timeout`. `start` launches the
-gateway as a detached process, `status` prints its state and address, and `stop`
-terminates it. `gui` opens a native WebView manager backed by the same public
-library API. The manager lists services and provides add, edit, remove, start,
+`env`, `token-command`, `scheme`, `user` and `timeout`. New services default to
+`scheme=none`; supply `scheme=bearer` or `scheme=basic` when a credential is
+used. `start` launches the gateway as a detached process, `status` prints its
+state and address, and `stop` terminates it. `gui` opens a native WebView
+manager backed by the same public library API. The manager lists services and
+provides add, edit, remove, start,
 stop, status and listen-address controls. It is available only in builds with
 `libwvw`; elsewhere the command reports that the GUI is unavailable and exits
 with status 1. On Windows, libwvw uses
